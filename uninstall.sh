@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-[[ $EUID -eq 0 ]] || { echo "請使用 sudo ./uninstall.sh"; exit 1; }
+[[ $EUID -eq 0 ]] || { echo "請使用 sudo bash uninstall.sh"; exit 1; }
 
 systemctl disable --now server-admin-portal 2>/dev/null || true
 rm -f /etc/systemd/system/server-admin-portal.service

@@ -7,7 +7,7 @@ echo "======================================"
 
 if [[ $EUID -ne 0 ]]; then
     echo "請使用 sudo 執行："
-    echo "  sudo ./install-tailscale.sh"
+    echo "  sudo bash install-tailscale.sh"
     exit 1
 fi
 

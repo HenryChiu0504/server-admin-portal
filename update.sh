@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-[[ $EUID -eq 0 ]] || { echo "請使用 sudo ./update.sh"; exit 1; }
+[[ $EUID -eq 0 ]] || { echo "請使用 sudo bash update.sh"; exit 1; }
 DST=/opt/server-admin-portal
 [[ -d "$DST/.git" ]] || { echo "$DST 不是 Git clone 目錄，請先使用 GitHub clone 部署。"; exit 1; }
 

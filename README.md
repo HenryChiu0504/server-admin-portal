@@ -33,9 +33,9 @@ Installation requires root privileges.
 Clone the repository and run the installer:
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/server-admin-portal.git
+git clone https://github.com/HenryChiu0504/server-admin-portal.git
 cd server-admin-portal
-sudo ./install.sh
+sudo bash install.sh
 ```
 
 The installer creates the Python environment, installs dependencies, configures the systemd service, and generates the initial administrator credentials.
@@ -127,7 +127,7 @@ For Git-based installations:
 
 ```bash
 cd /opt/server-admin-portal
-sudo ./update.sh
+sudo bash update.sh
 ```
 
 Alternatively:
@@ -142,7 +142,7 @@ sudo systemctl restart server-admin-portal
 
 ```bash
 cd /opt/server-admin-portal
-sudo ./uninstall.sh
+sudo bash uninstall.sh
 ```
 
 The application directory and `/etc/server-admin-portal.env` are preserved by default to prevent accidental loss of configuration.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-[[ $EUID -eq 0 ]] || { echo "請使用 sudo ./install.sh"; exit 1; }
+[[ $EUID -eq 0 ]] || { echo "請使用 sudo bash install.sh"; exit 1; }
 SRC="$(cd "$(dirname "$0")" && pwd)"
 DST=/opt/server-admin-portal
 

@@ -227,6 +227,20 @@ async def api_tailscale_logout(request: Request):
 
 
 
+def fan_service_active() -> bool:
+    result = run(["systemctl", "is-active", "--quiet", "nvidia-fan-x.service"], timeout=5)
+    return result.returncode == 0
+
+
+def fan_ready() -> bool:
+    if not Path("/usr/local/libexec/nvidia-fanctl").exists():
+        return False
+    display = os.environ.get("NVIDIA_FAN_DISPLAY", ":99")
+    gpus = run(["nvidia-settings", "-c", display, "-q", "gpus"], timeout=5)
+    fans = run(["nvidia-settings", "-c", display, "-q", "fans"], timeout=5)
+    return gpus.returncode == 0 and fans.returncode == 0
+
+
 def fan_mode() -> str:
     if not Path("/usr/local/libexec/nvidia-fanctl").exists():
         return "unavailable"
@@ -240,7 +254,39 @@ def fan_mode() -> str:
 async def api_fan_status(request: Request):
     require_auth(request)
     installed = Path("/usr/local/libexec/nvidia-fanctl").exists()
-    return {"installed": installed, "mode": fan_mode(), "gpus": gpu_metrics()}
+    service_active = fan_service_active() if installed else False
+    ready = fan_ready() if installed else False
+    return {
+        "installed": installed,
+        "ready": ready,
+        "service_active": service_active,
+        "mode": fan_mode() if ready else "unknown",
+        "gpus": gpu_metrics(),
+    }
+
+
+@app.post("/api/fan/service/restart")
+async def api_fan_service_restart(request: Request):
+    require_auth(request)
+    require_root()
+    if not Path("/usr/local/libexec/nvidia-fanctl").exists():
+        raise HTTPException(status_code=400, detail="尚未安裝 NVIDIA fan control 元件")
+
+    run(["systemctl", "stop", "nvidia-fan-x.service"], timeout=12)
+    run(["bash", "-lc", "pkill -TERM -f '(^|/)X(org)? :99( |$)' 2>/dev/null || true"], timeout=5)
+    run(["bash", "-lc", "rm -f /tmp/.X99-lock /tmp/.X11-unix/X99"], timeout=5)
+
+    result = run(["systemctl", "start", "nvidia-fan-x.service"], timeout=20)
+    if result.returncode != 0:
+        raise HTTPException(status_code=500, detail=result.stdout.strip() or "無法啟動 nvidia-fan-x.service")
+
+    for _ in range(20):
+        if fan_ready():
+            return {"ok": True, "message": "NVIDIA fan control 服務已啟動"}
+        await asyncio.sleep(0.5)
+
+    status = run(["systemctl", "status", "nvidia-fan-x.service", "--no-pager"], timeout=8)
+    raise HTTPException(status_code=500, detail=(status.stdout or "服務已啟動，但 :99 尚未就緒")[-4000:])
 
 
 @app.post("/api/fan/install")
