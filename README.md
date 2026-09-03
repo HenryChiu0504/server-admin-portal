@@ -164,3 +164,12 @@ See [SECURITY.md](SECURITY.md) for additional security information.
 ## License
 
 No open-source license is currently included. Add an appropriate `LICENSE` file before distributing the project under specific reuse or redistribution terms.
+
+
+## v2.2.0-public
+
+- NVIDIA Fan Control readiness now verifies `GPUFanControlState`, not only GPU/Fan target enumeration.
+- Avoids taking over an unrelated occupied `:99`; automatically selects a free private display from `:99` to `:95`.
+- Persists the selected display in `/etc/server-admin-portal.env` as `NVIDIA_FAN_DISPLAY`.
+- Adds Ubuntu 26.04 (`resolute`) package-path compatibility.
+- Does not request sudo passwords in the web UI; the Portal backend already performs system-management actions as root.

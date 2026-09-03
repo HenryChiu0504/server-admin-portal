@@ -232,19 +232,45 @@ def fan_service_active() -> bool:
     return result.returncode == 0
 
 
+def fan_display() -> str:
+    # The installer may choose a private display other than :99 when :99 is
+    # already occupied by an unrelated X server. Read the persisted value on
+    # every status request so the backend does not need to be restarted just
+    # to learn the selected display.
+    value = os.environ.get("NVIDIA_FAN_DISPLAY", "").strip()
+    env_path = Path("/etc/server-admin-portal.env")
+    if env_path.exists():
+        try:
+            for line in env_path.read_text().splitlines():
+                if line.startswith("NVIDIA_FAN_DISPLAY="):
+                    candidate = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if re.fullmatch(r":[0-9]+", candidate):
+                        value = candidate
+        except OSError:
+            pass
+    return value if re.fullmatch(r":[0-9]+", value) else ":99"
+
+
 def fan_ready() -> bool:
     if not Path("/usr/local/libexec/nvidia-fanctl").exists():
         return False
-    display = os.environ.get("NVIDIA_FAN_DISPLAY", ":99")
+    display = fan_display()
+    # Listing GPU/Fan targets alone is not enough. Some unrelated X displays
+    # expose those targets while NV-CONTROL fan attributes return Bad handle.
     gpus = run(["nvidia-settings", "-c", display, "-q", "gpus"], timeout=5)
+    if gpus.returncode != 0:
+        return False
     fans = run(["nvidia-settings", "-c", display, "-q", "fans"], timeout=5)
-    return gpus.returncode == 0 and fans.returncode == 0
+    if fans.returncode != 0:
+        return False
+    control = run(["nvidia-settings", "-c", display, "-q", "[gpu:0]/GPUFanControlState", "-t"], timeout=5)
+    return control.returncode == 0 and bool(control.stdout.strip())
 
 
 def fan_mode() -> str:
     if not Path("/usr/local/libexec/nvidia-fanctl").exists():
         return "unavailable"
-    result = run(["nvidia-settings", "-c", os.environ.get("NVIDIA_FAN_DISPLAY", ":99"), "-q", "[gpu:0]/GPUFanControlState", "-t"], timeout=5)
+    result = run(["nvidia-settings", "-c", fan_display(), "-q", "[gpu:0]/GPUFanControlState", "-t"], timeout=5)
     if result.returncode != 0:
         return "unknown"
     return "manual" if result.stdout.strip().splitlines()[-1:] == ["1"] else "auto"
@@ -260,6 +286,7 @@ async def api_fan_status(request: Request):
         "installed": installed,
         "ready": ready,
         "service_active": service_active,
+        "display": fan_display() if installed else None,
         "mode": fan_mode() if ready else "unknown",
         "gpus": gpu_metrics(),
     }
