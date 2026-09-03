@@ -12,7 +12,7 @@ from typing import Any
 
 import psutil
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -251,6 +251,39 @@ async def api_fan_install(request: Request):
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stdout[-4000:])
     return {"ok": True, "message": "風扇控制軟體安裝完成", "log": result.stdout[-4000:]}
+
+
+@app.get("/api/fan/install-stream")
+async def api_fan_install_stream(request: Request):
+    require_auth(request)
+    require_root()
+
+    async def stream():
+        proc = subprocess.Popen(
+            [str(TOOLS_DIR / "fan_install.sh")],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        loop = asyncio.get_running_loop()
+        assert proc.stdout is not None
+        while True:
+            line = await loop.run_in_executor(None, proc.stdout.readline)
+            if line:
+                yield "data: " + json.dumps({"type": "line", "text": line.rstrip("\n")}, ensure_ascii=False) + "\n\n"
+                continue
+            if proc.poll() is not None:
+                break
+            await asyncio.sleep(0.05)
+        code = await loop.run_in_executor(None, proc.wait)
+        yield "data: " + json.dumps({"type": "done", "ok": code == 0, "code": code}, ensure_ascii=False) + "\n\n"
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/api/fan/auto")
