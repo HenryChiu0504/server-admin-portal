@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Server Admin Portal · Login</title>
+  <link rel="stylesheet" href="{{ base_path }}/static/style.css" />
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <div class="brand-mark">S</div>
+    <h1>Server Admin Portal</h1>
+    <p class="muted">登入後管理 Tailscale、GPU 風扇、Linux 使用者與伺服器狀態。</p>
+    {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+    <form method="post" action="{{ base_path }}/login" class="stack">
+      <label>管理密碼<input type="password" name="password" autocomplete="current-password" required autofocus /></label>
+      <button class="primary" type="submit">登入</button>
+    </form>
+  </main>
+</body>
+</html>
