@@ -33,7 +33,7 @@ Installation requires root privileges.
 Clone the repository and run the installer:
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/server-admin-portal.git
+git clone https://github.com/HenryChiu0504/server-admin-portal.git
 cd server-admin-portal
 sudo ./install.sh
 ```
