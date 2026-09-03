@@ -86,18 +86,21 @@ exec /usr/local/libexec/nvidia-fanctl auto
 EOF
 chmod 755 /usr/local/bin/fan_95.sh /usr/local/bin/fan_init.sh
 
-echo "[5/6] Starting fan-control X server..."
+echo "[5/6] Checking fan-control X server..."
 systemctl daemon-reload
 systemctl enable nvidia-fan-x.service >/dev/null
-systemctl stop nvidia-fan-x.service 2>/dev/null || true
-pkill -TERM -f '(^|/)X(org)? :99( |$)' 2>/dev/null || true
-rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
-systemctl start --no-block nvidia-fan-x.service
 READY=0
-for _ in $(seq 1 30); do
-  if nvidia-settings -c :99 -q gpus >/dev/null 2>&1 && nvidia-settings -c :99 -q fans >/dev/null 2>&1; then READY=1; break; fi
-  sleep 1
-done
+if nvidia-settings -c :99 -q gpus >/dev/null 2>&1 && nvidia-settings -c :99 -q fans >/dev/null 2>&1; then
+  echo "[OK] Existing :99 X server already exposes NVIDIA GPUs and fans; leaving it untouched."
+  READY=1
+else
+  echo "[INFO] :99 is not ready; starting nvidia-fan-x.service without terminating existing X processes."
+  systemctl start --no-block nvidia-fan-x.service || true
+  for _ in $(seq 1 30); do
+    if nvidia-settings -c :99 -q gpus >/dev/null 2>&1 && nvidia-settings -c :99 -q fans >/dev/null 2>&1; then READY=1; break; fi
+    sleep 1
+  done
+fi
 if [[ "$READY" -ne 1 ]]; then
   echo "ERROR: fan-control X server did not become ready"
   systemctl status nvidia-fan-x.service --no-pager || true

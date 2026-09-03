@@ -272,17 +272,20 @@ async def api_fan_service_restart(request: Request):
     if not Path("/usr/local/libexec/nvidia-fanctl").exists():
         raise HTTPException(status_code=400, detail="尚未安裝 NVIDIA fan control 元件")
 
-    run(["systemctl", "stop", "nvidia-fan-x.service"], timeout=12)
-    run(["bash", "-lc", "pkill -TERM -f '(^|/)X(org)? :99( |$)' 2>/dev/null || true"], timeout=5)
-    run(["bash", "-lc", "rm -f /tmp/.X99-lock /tmp/.X11-unix/X99"], timeout=5)
+    # Functional readiness is authoritative.  A usable :99 X server may have
+    # been started outside systemd, so never kill a working display merely
+    # because systemctl reports inactive.
+    if fan_ready():
+        return {"ok": True, "message": "NVIDIA fan control 已就緒，無需重新啟動"}
 
+    run(["systemctl", "daemon-reload"], timeout=10)
     result = run(["systemctl", "start", "nvidia-fan-x.service"], timeout=20)
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stdout.strip() or "無法啟動 nvidia-fan-x.service")
 
     for _ in range(20):
         if fan_ready():
-            return {"ok": True, "message": "NVIDIA fan control 服務已啟動"}
+            return {"ok": True, "message": "NVIDIA fan control 已就緒"}
         await asyncio.sleep(0.5)
 
     status = run(["systemctl", "status", "nvidia-fan-x.service", "--no-pager"], timeout=8)
