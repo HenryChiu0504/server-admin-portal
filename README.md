@@ -127,7 +127,7 @@ For Git-based installations:
 
 ```bash
 cd /opt/server-admin-portal
-sudo ./update.sh
+sudo bash update.sh
 ```
 
 Alternatively:
@@ -142,7 +142,7 @@ sudo systemctl restart server-admin-portal
 
 ```bash
 cd /opt/server-admin-portal
-sudo ./uninstall.sh
+sudo bash uninstall.sh
 ```
 
 The application directory and `/etc/server-admin-portal.env` are preserved by default to prevent accidental loss of configuration.
