@@ -10,6 +10,9 @@ The project is designed for NVIDIA GPU workstations and multi-GPU servers, and s
 - Dynamic NVIDIA GPU discovery
 - Per-GPU temperature, fan speed, VRAM, and utilization monitoring
 - NVIDIA GPU automatic and manual fan control
+- One-click NVIDIA fan-control recovery
+- Browser-based terminal (TTY) with per-user Linux login
+- One-click apt package update
 - Tailscale installation, authentication, status, and logout
 - Linux user creation, deletion, UID/GID display, and optional password reset
 - Web administrator password management
@@ -165,6 +168,24 @@ See [SECURITY.md](SECURITY.md) for additional security information.
 
 No open-source license is currently included. Add an appropriate `LICENSE` file before distributing the project under specific reuse or redistribution terms.
 
+
+## v2.3.0
+
+- **Fan-control recovery** (GPU 風扇 → 一鍵恢復風扇控制, `tools/fan_recover.sh`). Fixes the case where
+  `plymouth-quit-wait.service` never finishes, `multi-user.target` stays waiting, and
+  `nvidia-fan-x.service` (previously ordered `After=multi-user.target`) sits in `start waiting`, so the
+  private `:99` X server never starts and `nvidia-fanctl` reports `no GPU targets detected`. The script
+  stops the stuck Plymouth job, removes the `After=multi-user.target` ordering, cancels the waiting job,
+  clears stale X locks, restarts the service, verifies GPU/fan targets and `GPUFanControlState`, and
+  switches fans back to Auto. `fan_install.sh` now writes the corrected unit ordering.
+- **Web terminal** (終端機 TTY). xterm.js over a WebSocket to `/bin/login` on a server-side pty; every
+  person signs in with their own Linux account. Requires WebSocket proxying: re-run `update.sh` (nginx)
+  and, for Docker Apache, `tools/setup-docker-apache-tool.sh` (enables `proxy_wstunnel`).
+  The browser loads xterm.js from cdn.jsdelivr.net.
+- **One-click package update** (套件更新). Runs `apt-get update && apt-get upgrade` through
+  `systemd-run` so closing the page never interrupts dpkg. NVIDIA driver packages are held during the
+  upgrade by default, because upgrading a loaded driver breaks `nvidia-smi` and fan control until reboot.
+  Log: `/var/log/server-admin-portal/pkg-upgrade.log`.
 
 ## v2.2.0-public
 

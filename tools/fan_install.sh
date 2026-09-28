@@ -90,7 +90,9 @@ chmod 755 /usr/local/sbin/nvidia-fan-x-start
 cat >/etc/systemd/system/nvidia-fan-x.service <<'EOS'
 [Unit]
 Description=Local NVIDIA X server for fan control
-After=multi-user.target
+# Do not order After=multi-user.target: this unit is WantedBy that target, so a
+# stuck boot job (e.g. plymouth-quit-wait.service) would block it forever.
+After=systemd-user-sessions.service systemd-modules-load.service nvidia-persistenced.service
 [Service]
 Type=simple
 EnvironmentFile=-/etc/server-admin-portal.env
@@ -147,7 +149,7 @@ systemctl daemon-reload
 systemctl enable nvidia-fan-x.service >/dev/null
 if ! fan_display_ready "$DISPLAY_NUM"; then
   echo "[INFO] $DISPLAY_NUM is reserved for this installer and is not ready yet; starting nvidia-fan-x.service."
-  systemctl restart nvidia-fan-x.service
+  timeout 30 systemctl restart nvidia-fan-x.service || echo "[WARN] systemctl restart returned non-zero"
   READY=0
   for _ in $(seq 1 30); do
     if fan_display_ready "$DISPLAY_NUM"; then READY=1; break; fi

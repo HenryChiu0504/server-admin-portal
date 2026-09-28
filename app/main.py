@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import os
 import pwd
 import re
 import secrets
+import signal
+import struct
 import subprocess
+import termios
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import psutil
-from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi import FastAPI, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -41,6 +46,35 @@ def run(cmd: list[str], timeout: int = 30, input_text: str | None = None) -> sub
         stderr=subprocess.STDOUT,
         timeout=timeout,
         check=False,
+    )
+
+
+def sse_command(cmd: list[str]) -> StreamingResponse:
+    async def stream():
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        loop = asyncio.get_running_loop()
+        assert proc.stdout is not None
+        while True:
+            line = await loop.run_in_executor(None, proc.stdout.readline)
+            if line:
+                yield "data: " + json.dumps({"type": "line", "text": line.rstrip("\n")}, ensure_ascii=False) + "\n\n"
+                continue
+            if proc.poll() is not None:
+                break
+            await asyncio.sleep(0.05)
+        code = await loop.run_in_executor(None, proc.wait)
+        yield "data: " + json.dumps({"type": "done", "ok": code == 0, "code": code}, ensure_ascii=False) + "\n\n"
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
@@ -306,7 +340,9 @@ async def api_fan_service_restart(request: Request):
         return {"ok": True, "message": "NVIDIA fan control 已就緒，無需重新啟動"}
 
     run(["systemctl", "daemon-reload"], timeout=10)
-    result = run(["systemctl", "start", "nvidia-fan-x.service"], timeout=20)
+    # --no-block: a start job stuck behind an unfinished boot target would
+    # otherwise hang this request. Use /api/fan/recover-stream for that case.
+    result = run(["systemctl", "start", "--no-block", "nvidia-fan-x.service"], timeout=20)
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stdout.strip() or "無法啟動 nvidia-fan-x.service")
 
@@ -333,33 +369,16 @@ async def api_fan_install(request: Request):
 async def api_fan_install_stream(request: Request):
     require_auth(request)
     require_root()
+    return sse_command([str(TOOLS_DIR / "fan_install.sh")])
 
-    async def stream():
-        proc = subprocess.Popen(
-            [str(TOOLS_DIR / "fan_install.sh")],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-        loop = asyncio.get_running_loop()
-        assert proc.stdout is not None
-        while True:
-            line = await loop.run_in_executor(None, proc.stdout.readline)
-            if line:
-                yield "data: " + json.dumps({"type": "line", "text": line.rstrip("\n")}, ensure_ascii=False) + "\n\n"
-                continue
-            if proc.poll() is not None:
-                break
-            await asyncio.sleep(0.05)
-        code = await loop.run_in_executor(None, proc.wait)
-        yield "data: " + json.dumps({"type": "done", "ok": code == 0, "code": code}, ensure_ascii=False) + "\n\n"
 
-    return StreamingResponse(
-        stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+@app.get("/api/fan/recover-stream")
+async def api_fan_recover_stream(request: Request):
+    require_auth(request)
+    require_root()
+    if not Path("/usr/local/libexec/nvidia-fanctl").exists():
+        raise HTTPException(status_code=400, detail="尚未安裝 NVIDIA fan control 元件")
+    return sse_command(["bash", str(TOOLS_DIR / "fan_recover.sh")])
 
 
 @app.post("/api/fan/auto")
@@ -382,6 +401,173 @@ async def api_fan_set(speed: int, request: Request):
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stdout.strip())
     return {"ok": True, "message": f"風扇已設定為 {speed}%", "log": result.stdout}
+
+
+PKG_UNIT = "server-admin-portal-pkg-upgrade.service"
+PKG_LOG = Path("/var/log/server-admin-portal/pkg-upgrade.log")
+
+
+def pkg_upgrade_running() -> bool:
+    state = run(["systemctl", "is-active", PKG_UNIT], timeout=5).stdout.strip()
+    return state in {"active", "activating", "reloading"}
+
+
+def upgradable_packages() -> list[str]:
+    result = run(["apt", "list", "--upgradable"], timeout=60)
+    return [line.split("/", 1)[0] for line in result.stdout.splitlines() if "/" in line and "[upgradable" in line]
+
+
+@app.get("/api/packages/status")
+async def api_packages_status(request: Request):
+    require_auth(request)
+    packages = await asyncio.to_thread(upgradable_packages)
+    return {
+        "running": pkg_upgrade_running(),
+        "upgradable": packages,
+        "reboot_required": Path("/var/run/reboot-required").exists(),
+    }
+
+
+@app.post("/api/packages/refresh")
+async def api_packages_refresh(request: Request):
+    require_auth(request)
+    require_root()
+    if pkg_upgrade_running():
+        raise HTTPException(status_code=409, detail="套件更新進行中，請稍後再試")
+    result = await asyncio.to_thread(run, ["apt-get", "update", "-o", "DPkg::Lock::Timeout=60"], 180)
+    if result.returncode != 0:
+        raise HTTPException(status_code=500, detail=result.stdout[-4000:])
+    packages = await asyncio.to_thread(upgradable_packages)
+    return {"ok": True, "message": f"共有 {len(packages)} 個套件可更新", "upgradable": packages}
+
+
+@app.post("/api/packages/upgrade")
+async def api_packages_upgrade(request: Request):
+    require_auth(request)
+    require_root()
+    body = await request.json()
+    keep_nvidia = bool(body.get("keep_nvidia", True))
+    if pkg_upgrade_running():
+        raise HTTPException(status_code=409, detail="套件更新已在進行中")
+    PKG_LOG.parent.mkdir(parents=True, exist_ok=True)
+    PKG_LOG.write_text("")
+    # systemd-run detaches apt from this HTTP request / backend process so a
+    # closed browser tab or a Portal restart never interrupts dpkg.
+    result = run([
+        "systemd-run", f"--unit={PKG_UNIT}", "--collect", "--quiet",
+        f"--setenv=KEEP_NVIDIA={'1' if keep_nvidia else '0'}",
+        f"--setenv=PKG_UPGRADE_LOG={PKG_LOG}",
+        "/bin/bash", str(TOOLS_DIR / "pkg_upgrade.sh"),
+    ], timeout=15)
+    if result.returncode != 0:
+        raise HTTPException(status_code=500, detail=result.stdout.strip() or "無法啟動套件更新")
+    return {"ok": True, "message": "已開始更新套件"}
+
+
+@app.get("/api/packages/log")
+async def api_packages_log(request: Request, offset: int = 0):
+    require_auth(request)
+    data = b""
+    if PKG_LOG.exists():
+        with PKG_LOG.open("rb") as f:
+            f.seek(max(0, offset))
+            data = f.read(256 * 1024)
+    # Only hand out complete lines so multi-byte characters are never split.
+    end = data.rfind(b"\n") + 1
+    text = data[:end].decode("utf-8", errors="replace")
+    exit_code = None
+    match = re.search(r"^__EXIT__ (\d+)$", text, flags=re.M)
+    if match:
+        exit_code = int(match.group(1))
+        text = re.sub(r"^__EXIT__ \d+\n?", "", text, flags=re.M)
+    return {
+        "text": text,
+        "offset": max(0, offset) + end,
+        "running": pkg_upgrade_running(),
+        "exit_code": exit_code,
+        "reboot_required": Path("/var/run/reboot-required").exists(),
+    }
+
+
+def websocket_same_origin(websocket: WebSocket) -> bool:
+    origin = websocket.headers.get("origin")
+    if not origin:
+        return True
+    # Compare host names only: the Docker Apache / nginx chain rewrites ports.
+    host = (websocket.headers.get("x-forwarded-host") or websocket.headers.get("host") or "").split(",")[0].strip()
+    return urlsplit(origin).hostname == urlsplit(f"//{host}").hostname
+
+
+@app.websocket("/api/terminal/ws")
+async def terminal_ws(websocket: WebSocket):
+    if not websocket.session.get("authenticated") or not websocket_same_origin(websocket):
+        await websocket.close(code=4401)
+        return
+    if os.geteuid() != 0:
+        await websocket.close(code=4500)
+        return
+    await websocket.accept()
+
+    master, slave = os.openpty()
+    # /bin/login asks for a Linux account and password, so every person gets a
+    # shell as their own user instead of sharing the backend's root identity.
+    # `setsid -c` makes the pty the controlling terminal of the new session.
+    proc = subprocess.Popen(
+        ["setsid", "-c", "/bin/login"],
+        stdin=slave, stdout=slave, stderr=slave,
+        env={"TERM": "xterm-256color", "LANG": os.environ.get("LANG", "C.UTF-8"), "PATH": "/usr/sbin:/usr/bin:/sbin:/bin"},
+        close_fds=True,
+    )
+    os.close(slave)
+
+    loop = asyncio.get_running_loop()
+    output: asyncio.Queue[bytes | None] = asyncio.Queue()
+
+    def on_readable() -> None:
+        try:
+            data = os.read(master, 65536)
+        except OSError:
+            data = b""
+        if not data:
+            loop.remove_reader(master)
+        output.put_nowait(data or None)
+
+    loop.add_reader(master, on_readable)
+
+    async def pump_output() -> None:
+        try:
+            while (data := await output.get()) is not None:
+                await websocket.send_bytes(data)
+            # login/shell exited: end the session from the server side.
+            await websocket.close()
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+
+    sender = asyncio.create_task(pump_output())
+    try:
+        while True:
+            msg = json.loads(await websocket.receive_text())
+            if msg.get("type") == "input":
+                os.write(master, str(msg.get("data", "")).encode())
+            elif msg.get("type") == "resize":
+                rows = max(1, min(500, int(msg.get("rows", 24))))
+                cols = max(1, min(1000, int(msg.get("cols", 80))))
+                fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+    except (WebSocketDisconnect, RuntimeError, OSError, ValueError, AttributeError):
+        pass
+    finally:
+        sender.cancel()
+        loop.remove_reader(master)
+        try:
+            os.killpg(proc.pid, signal.SIGHUP)
+        except ProcessLookupError:
+            pass
+        os.close(master)
+        try:
+            await asyncio.to_thread(proc.wait, 5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            await asyncio.to_thread(proc.wait)
 
 
 @app.get("/api/users")
