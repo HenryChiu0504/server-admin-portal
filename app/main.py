@@ -238,7 +238,7 @@ async def logout(request: Request):
 
 
 @app.get("/api/metrics")
-async def metrics(request: Request):
+def metrics(request: Request):
     require_auth(request)
     vm = psutil.virtual_memory()
     return {
@@ -251,13 +251,13 @@ async def metrics(request: Request):
 
 
 @app.get("/api/tailscale/status")
-async def api_tailscale_status(request: Request):
+def api_tailscale_status(request: Request):
     require_auth(request)
     return tailscale_state()
 
 
 @app.post("/api/tailscale/install")
-async def api_tailscale_install(request: Request):
+def api_tailscale_install(request: Request):
     require_auth(request)
     require_root()
     if tailscale_installed():
@@ -270,7 +270,7 @@ async def api_tailscale_install(request: Request):
 
 
 @app.post("/api/tailscale/login")
-async def api_tailscale_login(request: Request):
+def api_tailscale_login(request: Request):
     require_auth(request)
     require_root()
     if not tailscale_installed():
@@ -289,7 +289,7 @@ async def api_tailscale_login(request: Request):
 
 
 @app.post("/api/tailscale/logout")
-async def api_tailscale_logout(request: Request):
+def api_tailscale_logout(request: Request):
     require_auth(request)
     require_root()
     result = run(["tailscale", "logout"], timeout=20)
@@ -345,11 +345,13 @@ def fan_mode() -> str:
     result = run(["nvidia-settings", "-c", fan_display(), "-q", "[gpu:0]/GPUFanControlState", "-t"], timeout=5)
     if result.returncode != 0:
         return "unknown"
+    if load_fan_curve()["enabled"]:
+        return "curve"
     return "manual" if result.stdout.strip().splitlines()[-1:] == ["1"] else "auto"
 
 
 @app.get("/api/fan/status")
-async def api_fan_status(request: Request):
+def api_fan_status(request: Request):
     require_auth(request)
     installed = Path("/usr/local/libexec/nvidia-fanctl").exists()
     service_active = fan_service_active() if installed else False
@@ -361,11 +363,12 @@ async def api_fan_status(request: Request):
         "display": fan_display() if installed else None,
         "mode": fan_mode() if ready else "unknown",
         "gpus": gpu_metrics(),
+        "curve": {**load_fan_curve(), "state": fan_curve_state},
     }
 
 
 @app.post("/api/fan/service/restart")
-async def api_fan_service_restart(request: Request):
+def api_fan_service_restart(request: Request):
     require_auth(request)
     require_root()
     if not Path("/usr/local/libexec/nvidia-fanctl").exists():
@@ -387,14 +390,14 @@ async def api_fan_service_restart(request: Request):
     for _ in range(20):
         if fan_ready():
             return {"ok": True, "message": "NVIDIA fan control 已就緒"}
-        await asyncio.sleep(0.5)
+        time.sleep(0.5)
 
     status = run(["systemctl", "status", "nvidia-fan-x.service", "--no-pager"], timeout=8)
     raise HTTPException(status_code=500, detail=(status.stdout or "服務已啟動，但 :99 尚未就緒")[-4000:])
 
 
 @app.post("/api/fan/install")
-async def api_fan_install(request: Request):
+def api_fan_install(request: Request):
     require_auth(request)
     require_root()
     result = run([str(TOOLS_DIR / "fan_install.sh")], timeout=240)
@@ -420,25 +423,180 @@ async def api_fan_recover_stream(request: Request):
 
 
 @app.post("/api/fan/auto")
-async def api_fan_auto(request: Request):
+def api_fan_auto(request: Request):
     require_auth(request)
     require_root()
-    result = run(["/usr/local/libexec/nvidia-fanctl", "auto"], timeout=15)
+    with fan_lock:
+        disable_fan_curve()
+        result = run([FANCTL, "auto"], timeout=15)
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stdout.strip())
     return {"ok": True, "message": "已切換為 Auto", "log": result.stdout}
 
 
 @app.post("/api/fan/set/{speed}")
-async def api_fan_set(speed: int, request: Request):
+def api_fan_set(speed: int, request: Request):
     require_auth(request)
     require_root()
     if speed < 50 or speed > 95:
         raise HTTPException(status_code=400, detail="風扇手動速度只允許 50–95%")
-    result = run(["/usr/local/libexec/nvidia-fanctl", str(speed)], timeout=15)
+    with fan_lock:
+        disable_fan_curve()
+        result = run([FANCTL, str(speed)], timeout=15)
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stdout.strip())
     return {"ok": True, "message": f"風扇已設定為 {speed}%", "log": result.stdout}
+
+
+# ---------------------------------------------------------------------------
+# Temperature-based fan curve (all fans follow the hottest GPU)
+# ---------------------------------------------------------------------------
+
+FANCTL = "/usr/local/libexec/nvidia-fanctl"
+FAN_CURVE_DEFAULT = [[40, 50], [60, 60], [70, 70], [78, 85], [85, 95]]
+FAN_CURVE_INTERVAL = 10          # seconds between checks
+FAN_CURVE_STEP_DOWN = 5          # max % decrease per check (no oscillation)
+FAN_CURVE_FAILSAFE = 95          # used when temperatures cannot be read
+fan_lock = threading.Lock()
+fan_curve_state: dict[str, Any] = {"max_temp": None, "hot_gpu": None, "target": None, "applied": None, "updated_at": None, "error": None}
+
+
+def fan_curve_file() -> Path:
+    return DATA_DIR / "fan-curve.json"
+
+
+def load_fan_curve() -> dict[str, Any]:
+    try:
+        cfg = json.loads(fan_curve_file().read_text())
+        validate_fan_curve(cfg["points"])
+        return {"enabled": bool(cfg.get("enabled")), "points": cfg["points"]}
+    except (OSError, ValueError, KeyError, TypeError, HTTPException):
+        return {"enabled": False, "points": FAN_CURVE_DEFAULT}
+
+
+def save_fan_curve(enabled: bool, points: list[list[int]]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = fan_curve_file().with_suffix(".tmp")
+    tmp.write_text(json.dumps({"enabled": enabled, "points": points}))
+    tmp.replace(fan_curve_file())
+
+
+def validate_fan_curve(points: Any) -> list[list[int]]:
+    if not isinstance(points, list) or not 2 <= len(points) <= 8:
+        raise HTTPException(status_code=400, detail="曲線需要 2 到 8 個點")
+    clean = []
+    for pt in points:
+        t, s = int(pt[0]), int(pt[1])
+        if not 20 <= t <= 100 or not 50 <= s <= 95:
+            raise HTTPException(status_code=400, detail="溫度需在 20–100°C，轉速需在 50–95%")
+        clean.append([t, s])
+    for (t0, s0), (t1, s1) in zip(clean, clean[1:]):
+        if t1 <= t0 or s1 < s0:
+            raise HTTPException(status_code=400, detail="溫度必須由低到高遞增，轉速不可隨溫度升高而降低")
+    return clean
+
+
+def fan_curve_speed(points: list[list[int]], temp: float) -> int:
+    if temp <= points[0][0]:
+        return points[0][1]
+    for (t0, s0), (t1, s1) in zip(points, points[1:]):
+        if temp <= t1:
+            return round(s0 + (s1 - s0) * (temp - t0) / (t1 - t0))
+    return points[-1][1]
+
+
+def apply_fan_speed(speed: int) -> None:
+    result = run([FANCTL, str(speed)], timeout=20)
+    if result.returncode != 0:
+        raise RuntimeError(result.stdout.strip()[-300:] or f"nvidia-fanctl exited {result.returncode}")
+
+
+def fan_curve_loop() -> None:
+    failures = 0
+    while True:
+        time.sleep(FAN_CURVE_INTERVAL)
+        cfg = load_fan_curve()
+        if not cfg["enabled"] or not Path(FANCTL).exists():
+            fan_curve_state["applied"] = None
+            continue
+        with fan_lock:
+            if not load_fan_curve()["enabled"]:  # switched off while we waited
+                continue
+            try:
+                gpus = gpu_metrics()
+                if not gpus:
+                    raise RuntimeError("讀不到 GPU 溫度")
+                failures = 0
+                hot = max(gpus, key=lambda g: g["temperature"])
+                target = fan_curve_speed(cfg["points"], hot["temperature"])
+                current = fan_curve_state["applied"]
+                speed = target
+                if current is not None and target < current:
+                    # Fall slowly and ignore tiny dips.
+                    speed = current if current - target < 3 else max(target, current - FAN_CURVE_STEP_DOWN)
+                if speed != current:
+                    apply_fan_speed(speed)
+                    fan_curve_state["applied"] = speed
+                fan_curve_state.update(max_temp=hot["temperature"], hot_gpu=hot["index"], target=target, updated_at=time.time(), error=None)
+            except Exception as exc:
+                failures += 1
+                fan_curve_state.update(error=f"{exc}", updated_at=time.time())
+                if failures >= 3 and fan_curve_state["applied"] != FAN_CURVE_FAILSAFE:
+                    try:
+                        apply_fan_speed(FAN_CURVE_FAILSAFE)
+                        fan_curve_state["applied"] = FAN_CURVE_FAILSAFE
+                        fan_curve_state["error"] = f"{exc}（已提高到 {FAN_CURVE_FAILSAFE}% 保護 GPU）"
+                    except Exception:
+                        pass
+
+
+def disable_fan_curve() -> None:
+    cfg = load_fan_curve()
+    if cfg["enabled"]:
+        save_fan_curve(False, cfg["points"])
+    fan_curve_state["applied"] = None
+
+
+@app.on_event("startup")
+async def start_fan_curve_loop() -> None:
+    if os.geteuid() == 0:
+        threading.Thread(target=fan_curve_loop, name="fan-curve", daemon=True).start()
+
+
+@app.get("/api/fan/curve")
+def api_fan_curve(request: Request):
+    require_auth(request)
+    return {**load_fan_curve(), "state": fan_curve_state, "default": FAN_CURVE_DEFAULT, "interval": FAN_CURVE_INTERVAL}
+
+
+@app.post("/api/fan/curve")
+async def api_fan_curve_save(request: Request):
+    require_auth(request)
+    require_root()
+    body = await request.json()
+    points = validate_fan_curve(body.get("points"))
+    enabled = bool(body.get("enabled", True))
+
+    def save() -> dict[str, Any]:
+        with fan_lock:
+            save_fan_curve(enabled, points)
+            if not enabled:
+                fan_curve_state["applied"] = None
+                return {"ok": True, "message": "溫度曲線已儲存（未啟用）"}
+            # Apply once right away instead of waiting for the next check.
+            gpus = gpu_metrics()
+            if gpus:
+                hot = max(gpus, key=lambda g: g["temperature"])
+                speed = fan_curve_speed(points, hot["temperature"])
+                apply_fan_speed(speed)
+                fan_curve_state.update(applied=speed, target=speed, max_temp=hot["temperature"], hot_gpu=hot["index"], updated_at=time.time(), error=None)
+                return {"ok": True, "message": f"已啟用溫度曲線：目前最高 {hot['temperature']:.0f}°C（GPU {hot['index']}）→ 風扇 {speed}%"}
+            return {"ok": True, "message": "已啟用溫度曲線"}
+
+    try:
+        return await in_thread(save)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 PKG_UNIT = "server-admin-portal-pkg-upgrade.service"
@@ -496,7 +654,7 @@ async def api_packages_status(request: Request):
     require_auth(request)
     packages = await in_thread(upgradable_packages)
     return {
-        "running": pkg_upgrade_running(),
+        "running": await in_thread(pkg_upgrade_running),
         "upgradable": packages,
         "reboot_required": Path("/var/run/reboot-required").exists(),
     }
@@ -506,7 +664,7 @@ async def api_packages_status(request: Request):
 async def api_packages_refresh(request: Request):
     require_auth(request)
     require_root()
-    if pkg_upgrade_running():
+    if await in_thread(pkg_upgrade_running):
         raise HTTPException(status_code=409, detail="套件更新進行中，請稍後再試")
     result = await in_thread(run, ["apt-get", "update", "-o", "DPkg::Lock::Timeout=60"], 180)
     if result.returncode != 0:
@@ -521,9 +679,10 @@ async def api_packages_upgrade(request: Request):
     require_root()
     body = await request.json()
     keep_nvidia = bool(body.get("keep_nvidia", True))
-    if pkg_upgrade_running():
+    if await in_thread(pkg_upgrade_running):
         raise HTTPException(status_code=409, detail="套件更新已在進行中")
-    start_detached(
+    await in_thread(
+        start_detached,
         PKG_UNIT, PKG_LOG, ["/bin/bash", str(TOOLS_DIR / "pkg_upgrade.sh")],
         {"KEEP_NVIDIA": "1" if keep_nvidia else "0", "PKG_UPGRADE_LOG": str(PKG_LOG)},
     )
@@ -531,7 +690,7 @@ async def api_packages_upgrade(request: Request):
 
 
 @app.get("/api/packages/log")
-async def api_packages_log(request: Request, offset: int = 0):
+def api_packages_log(request: Request, offset: int = 0):
     require_auth(request)
     return {
         **read_job_log(PKG_LOG, offset),
@@ -575,7 +734,7 @@ def portal_commit(ref: str) -> dict[str, str] | None:
 
 
 @app.get("/api/portal/about")
-async def api_portal_about(request: Request):
+def api_portal_about(request: Request):
     require_auth(request)
     is_git = portal_git("rev-parse", "--is-inside-work-tree", timeout=5).stdout.strip() == "true"
     return {
@@ -637,7 +796,7 @@ async def api_portal_update_status(request: Request):
 
 
 @app.post("/api/portal/update")
-async def api_portal_update(request: Request):
+def api_portal_update(request: Request):
     require_auth(request)
     require_root()
     if unit_running(PORTAL_UNIT):
@@ -650,7 +809,7 @@ async def api_portal_update(request: Request):
 
 
 @app.get("/api/portal/update/log")
-async def api_portal_update_log(request: Request, offset: int = 0):
+def api_portal_update_log(request: Request, offset: int = 0):
     require_auth(request)
     return {**read_job_log(PORTAL_LOG, offset), "running": unit_running(PORTAL_UNIT)}
 
@@ -1037,7 +1196,7 @@ async def api_disks(request: Request):
 
 
 @app.post("/api/disks/scan")
-async def api_disks_scan(request: Request):
+def api_disks_scan(request: Request):
     require_auth(request)
     require_root()
     if not start_disk_scan():
@@ -1046,7 +1205,7 @@ async def api_disks_scan(request: Request):
 
 
 @app.get("/api/users")
-async def api_users(request: Request):
+def api_users(request: Request):
     require_auth(request)
     return {"users": list_normal_users()}
 
@@ -1062,6 +1221,10 @@ async def api_create_user(request: Request):
         raise HTTPException(status_code=400, detail="使用者名稱格式不合法")
     if not password:
         raise HTTPException(status_code=400, detail="請輸入密碼")
+    return await in_thread(create_user, username, password)
+
+
+def create_user(username: str, password: str) -> dict[str, Any]:
     if run(["id", username]).returncode == 0:
         raise HTTPException(status_code=409, detail="使用者已存在")
     result = run(["useradd", "-m", "-s", "/bin/bash", username], timeout=20)
@@ -1075,7 +1238,7 @@ async def api_create_user(request: Request):
 
 
 @app.post("/api/users/{username}/reset-password")
-async def api_reset_user_password(username: str, request: Request):
+def api_reset_user_password(username: str, request: Request):
     require_auth(request)
     require_root()
     if not re.fullmatch(r"[a-z_][a-z0-9_-]*", username) or run(["id", username]).returncode != 0:
@@ -1117,7 +1280,7 @@ async def api_change_admin_password(request: Request):
 
 
 @app.delete("/api/users/{username}")
-async def api_delete_user(username: str, request: Request):
+def api_delete_user(username: str, request: Request):
     require_auth(request)
     require_root()
     if not re.fullmatch(r"[a-z_][a-z0-9_-]*", username):

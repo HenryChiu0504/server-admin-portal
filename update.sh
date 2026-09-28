@@ -22,6 +22,16 @@ cp "$DST/nginx-server-admin-portal.conf" /etc/nginx/sites-available/server-admin
 ln -sf /etc/nginx/sites-available/server-admin-portal /etc/nginx/sites-enabled/server-admin-portal
 rm -f /etc/nginx/sites-enabled/default
 
+# Older fan-control installs ordered nvidia-fan-x.service After=multi-user.target,
+# so a stuck boot job (e.g. plymouth-quit-wait) kept it from starting. Fix the
+# ordering in place; the running fan service is not restarted (applies next boot).
+FAN_UNIT=/etc/systemd/system/nvidia-fan-x.service
+if [[ -f "$FAN_UNIT" ]] && grep -q '^After=.*multi-user\.target' "$FAN_UNIT"; then
+  cp -a "$FAN_UNIT" "${FAN_UNIT}.bak.$(date +%Y%m%d-%H%M%S)"
+  sed -i 's/^After=.*multi-user\.target.*$/After=systemd-user-sessions.service systemd-modules-load.service nvidia-persistenced.service/' "$FAN_UNIT"
+  echo "[FIX] 已修正 nvidia-fan-x.service 的開機順序（下次開機生效，未重啟風扇服務）"
+fi
+
 nginx -t
 systemctl daemon-reload
 systemctl restart server-admin-portal
