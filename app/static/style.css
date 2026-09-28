@@ -31,6 +31,12 @@
 .pkg-log{margin-top:16px;height:min(50vh,460px)}
 button:disabled{opacity:.55;cursor:not-allowed}
 
+/* v2.4 about page */
+.about-rows{display:grid;gap:12px}
+.about-rows>div{display:grid;grid-template-columns:90px minmax(0,1fr);gap:12px;align-items:baseline}
+.about-rows a{color:var(--blue);overflow-wrap:anywhere}
+.success-check.warn{background:#351c1f;border-color:var(--danger);color:var(--danger)}
+
 /* v2.1.6 small breathing room below telemetry */
 .content{padding-top:52px}
 @media(max-width:980px){.content{padding-top:38px}}
