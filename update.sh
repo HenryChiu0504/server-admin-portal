@@ -5,6 +5,9 @@ DST=/opt/server-admin-portal
 [[ -d "$DST/.git" ]] || { echo "$DST 不是 Git clone 目錄，請先使用 GitHub clone 部署。"; exit 1; }
 
 cd "$DST"
+# Allow root (this script, the Portal service) to use a checkout owned by the
+# admin user; older git ignores `-c safe.directory`, so use the system config.
+git config --system --get-all safe.directory 2>/dev/null | grep -qxF "$DST" || git config --system --add safe.directory "$DST"
 # chmod +x below must not show up as local changes that block the next pull.
 git -c safe.directory="$DST" config core.fileMode false
 git -c safe.directory="$DST" pull --ff-only

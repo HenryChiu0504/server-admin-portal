@@ -15,6 +15,8 @@ main() {
 
   echo "[INFO] $(date '+%F %T') 開始更新 Server Admin Portal ($dst)"
   local git=(git -C "$dst" -c "safe.directory=$dst")
+  # Older git ignores `-c safe.directory`; register the exception system-wide.
+  git config --system --get-all safe.directory 2>/dev/null | grep -qxF "$dst" || git config --system --add safe.directory "$dst"
   # install.sh / update.sh chmod the scripts; do not treat that as local edits.
   "${git[@]}" config core.fileMode false
   echo "[1/2] git pull --ff-only"

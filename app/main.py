@@ -508,8 +508,16 @@ PORTAL_REPO_URL = "https://github.com/HenryChiu0504/server-admin-portal"
 
 
 def portal_git(*args: str, timeout: int = 15) -> subprocess.CompletedProcess[str]:
-    # The backend runs as root while the checkout may belong to another user.
-    return run(["git", "-C", str(PROJECT_DIR), "-c", f"safe.directory={PROJECT_DIR}", *args], timeout=timeout)
+    # The backend runs as root while the checkout usually belongs to the admin
+    # user. Older git (e.g. Ubuntu 22.04's 2.34 backport) ignores
+    # `-c safe.directory`, so on "dubious ownership" register the exception in
+    # the system config (as git's own hint suggests) and retry once.
+    cmd = ["git", "-C", str(PROJECT_DIR), "-c", f"safe.directory={PROJECT_DIR}", *args]
+    result = run(cmd, timeout=timeout)
+    if result.returncode != 0 and "dubious ownership" in result.stdout:
+        run(["git", "config", "--system", "--add", "safe.directory", str(PROJECT_DIR)], timeout=5)
+        result = run(cmd, timeout=timeout)
+    return result
 
 
 def portal_repo_url() -> str:
@@ -543,8 +551,11 @@ async def api_portal_about(request: Request):
 async def api_portal_check_update(request: Request):
     require_auth(request)
     require_root()
-    if portal_git("rev-parse", "--is-inside-work-tree", timeout=5).stdout.strip() != "true":
-        raise HTTPException(status_code=400, detail=f"{PROJECT_DIR} 不是 Git clone，無法線上更新；請參考 README 重新以 git clone 部署")
+    probe = portal_git("rev-parse", "--is-inside-work-tree", timeout=5)
+    if probe.stdout.strip() != "true":
+        if not (PROJECT_DIR / ".git").exists():
+            raise HTTPException(status_code=400, detail=f"{PROJECT_DIR} 不是 Git clone，無法線上更新；請參考 README 重新以 git clone 部署")
+        raise HTTPException(status_code=500, detail="無法讀取 Git 版本資訊：" + probe.stdout.strip()[-1000:])
     fetch = await asyncio.to_thread(portal_git, "fetch", "--quiet", "origin", timeout=60)
     if fetch.returncode != 0:
         raise HTTPException(status_code=502, detail="無法連線 GitHub：" + fetch.stdout.strip()[-1000:])
