@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import functools
+import hashlib
 import json
 import os
 import pwd
@@ -36,6 +37,20 @@ app = FastAPI(title="Server Admin Portal", docs_url=None, redoc_url=None)
 app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax", https_only=False)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
+
+
+def static_version() -> str:
+    # Cache-busting tag for static URLs: changes whenever any static file
+    # changes, so browsers fetch the new CSS/JS right after an update.
+    digest = hashlib.sha1()
+    for path in sorted((BASE_DIR / "static").rglob("*")):
+        if path.is_file():
+            digest.update(path.name.encode())
+            digest.update(path.read_bytes())
+    return digest.hexdigest()[:10]
+
+
+templates.env.globals["asset_version"] = static_version()
 
 
 def run(
