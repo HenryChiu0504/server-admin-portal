@@ -40,8 +40,14 @@ conf.write_text(text)
 PY
 
 docker exec "$CONTAINER" apache2ctl configtest
-docker restart "$CONTAINER" >/dev/null
+# Graceful restart re-reads the config and newly enabled modules without
+# dropping in-flight requests, so other sites on this Apache stay up.
+if ! docker exec "$CONTAINER" apache2ctl graceful; then
+  echo "[WARN] apache2ctl graceful 失敗，改為重啟容器 $CONTAINER（上面所有網站會中斷數秒）"
+  docker restart "$CONTAINER" >/dev/null
+fi
 
 echo "完成：${PATH_PREFIX}/ -> http://${GATEWAY}:${UPSTREAM_PORT}/"
 echo "請測試：http://<SERVER_IP>${PATH_PREFIX}/"
 echo "注意：若未來 docker compose 重新建立 container，Apache proxy modules 可能需要重新執行此腳本啟用。"
+echo "此腳本使用 apache2ctl graceful 套用設定，不會中斷其他網站的連線。"

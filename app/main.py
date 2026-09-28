@@ -549,7 +549,7 @@ def portal_repo_url() -> str:
 
 
 def portal_commit(ref: str) -> dict[str, str] | None:
-    result = portal_git("log", "-1", "--format=%h%x09%cs%x09%s", ref, timeout=5)
+    result = portal_git("log", "-1", "--date=short", "--format=%h%x09%cd%x09%s", ref, timeout=5)
     if result.returncode != 0 or not result.stdout.strip():
         return None
     short, date, subject = (result.stdout.strip().split("\t", 2) + ["", ""])[:3]
