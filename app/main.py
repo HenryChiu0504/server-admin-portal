@@ -587,29 +587,53 @@ async def api_portal_about(request: Request):
     }
 
 
-@app.post("/api/portal/check-update")
-async def api_portal_check_update(request: Request):
-    require_auth(request)
-    require_root()
+def portal_update_info() -> dict[str, Any]:
     probe = portal_git("rev-parse", "--is-inside-work-tree", timeout=5)
     if probe.stdout.strip() != "true":
         if not (PROJECT_DIR / ".git").exists():
             raise HTTPException(status_code=400, detail=f"{PROJECT_DIR} 不是 Git clone，無法線上更新；請參考 README 重新以 git clone 部署")
         raise HTTPException(status_code=500, detail="無法讀取 Git 版本資訊：" + probe.stdout.strip()[-1000:])
-    fetch = await in_thread(portal_git, "fetch", "--quiet", "origin", timeout=60)
+    fetch = portal_git("fetch", "--quiet", "origin", timeout=60)
     if fetch.returncode != 0:
         raise HTTPException(status_code=502, detail="無法連線 GitHub：" + fetch.stdout.strip()[-1000:])
     upstream = portal_git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", timeout=5).stdout.strip() or "origin/main"
     behind = portal_git("rev-list", "--count", f"HEAD..{upstream}", timeout=5).stdout.strip()
     log = portal_git("log", "--format=%h %s", f"HEAD..{upstream}", "-20", timeout=5).stdout.strip()
     count = int(behind) if behind.isdigit() else 0
-    return {
+    info = {
         "update_available": count > 0,
         "behind": count,
         "current": portal_commit("HEAD"),
         "latest": portal_commit(upstream),
         "changes": log.splitlines() if log else [],
+        "checked_at": time.time(),
     }
+    portal_update_cache.update(info=info, at=time.time())
+    return info
+
+
+portal_update_cache: dict[str, Any] = {"info": None, "at": 0.0}
+PORTAL_UPDATE_TTL = 6 * 3600
+
+
+@app.post("/api/portal/check-update")
+async def api_portal_check_update(request: Request):
+    require_auth(request)
+    require_root()
+    return await in_thread(portal_update_info)
+
+
+@app.get("/api/portal/update-status")
+async def api_portal_update_status(request: Request):
+    # For the dashboard banner: answer from cache, re-checking GitHub at most
+    # every PORTAL_UPDATE_TTL. Failures are reported quietly, never raised.
+    require_auth(request)
+    if portal_update_cache["info"] is None or time.time() - portal_update_cache["at"] > PORTAL_UPDATE_TTL:
+        try:
+            await in_thread(portal_update_info)
+        except HTTPException as exc:
+            portal_update_cache.update(info={"update_available": False, "error": exc.detail}, at=time.time())
+    return portal_update_cache["info"]
 
 
 @app.post("/api/portal/update")

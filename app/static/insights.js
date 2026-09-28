@@ -248,3 +248,53 @@ qs('#disk-scan').onclick = async () => {
   try { const r = await api('/api/disks/scan', {method: 'POST'}); log(r.message); refreshDisks(); }
   catch (e) { log('啟動掃描失敗：' + e.message); }
 };
+
+// ---------------------------------------------------------------- Dashboard cards
+function dashBadge(id, text, cls = '') {
+  const b = qs(`#${id}-badge`);
+  if (!b) return;
+  b.textContent = text || '';
+  b.className = `badge ${cls}` + (text ? '' : ' hidden');
+}
+let dashPkgAt = 0;
+
+async function refreshDashboard() {
+  const jobs = [
+    api('/api/gpu/processes').then(d => {
+      const busy = new Set(d.processes.map(p => p.gpu));
+      const users = [...new Set(d.processes.map(p => p.user || '未知'))];
+      qs('#dash-gpu').textContent = d.gpus.length
+        ? `${busy.size} / ${d.gpus.length} 張使用中` + (users.length ? ` · ${users.join('、')}` : ' · 全部閒置')
+        : '未偵測到 GPU';
+      dashBadge('dash-gpu', d.gpus.length && busy.size === d.gpus.length ? '全部使用中' : '', 'warn');
+    }),
+    api('/api/disks').then(d => {
+      const worst = [...d.disks].sort((a, b) => b.percent - a.percent)[0];
+      qs('#dash-disk').textContent = worst
+        ? `${d.disks.length} 顆硬碟 · 最滿：${worst.mount} 剩 ${fmtBytes(worst.free)}（已用 ${worst.percent.toFixed(0)}%）`
+        : '找不到硬碟';
+      const full = d.disks.filter(k => k.percent >= 90).length, high = d.disks.filter(k => k.percent >= 80).length;
+      dashBadge('dash-disk', full ? `${full} 顆空間不足` : high ? `${high} 顆偏高` : '', full ? 'bad' : 'warn');
+    }),
+    api('/api/portal/update-status').then(d => {
+      qs('#dash-update').classList.toggle('hidden', !d.update_available);
+      if (d.update_available) {
+        qs('#dash-update-title').textContent = `Server Admin Portal 有新版本（${d.behind} 個更新）`;
+        qs('#dash-update-sub').textContent = d.latest ? `最新：${d.latest.hash} · ${d.latest.date} · ${d.latest.subject}` : '';
+      }
+    }),
+    refreshFan(),
+  ];
+  // apt is slow; check packages at most every 10 minutes.
+  if (Date.now() - dashPkgAt > 600000) {
+    dashPkgAt = Date.now();
+    jobs.push(api('/api/packages/status').then(d => {
+      const n = d.upgradable.length;
+      qs('#dash-pkg').textContent = d.running ? '套件更新進行中…' : n ? `${n} 個套件可更新` : '已是最新';
+      dashBadge('dash-pkg', d.reboot_required ? '需重新開機' : '', 'warn');
+    }));
+  }
+  await Promise.allSettled(jobs);
+}
+setInterval(() => { if (pageActive('dashboard')) refreshDashboard(); }, 30000);
+refreshDashboard();
