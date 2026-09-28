@@ -5,8 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Server Admin Portal · Login</title>
   <link rel="stylesheet" href="{{ base_path }}/static/style.css" />
+  <script>try{var t=localStorage.getItem("portal-theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
 </head>
 <body class="login-body">
+  <button id="theme-toggle" class="ghost compact theme-btn login-theme" type="button"></button>
   <main class="login-card">
     <div class="brand-mark">S</div>
     <h1>Server Admin Portal</h1>
@@ -17,5 +19,6 @@
       <button class="primary" type="submit">登入</button>
     </form>
   </main>
+  <script src="{{ base_path }}/static/theme.js"></script>
 </body>
 </html>
