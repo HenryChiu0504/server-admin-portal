@@ -15,6 +15,9 @@ The project is designed for NVIDIA GPU workstations and multi-GPU servers, and s
 - One-click apt package update
 - About page with GitHub link and one-click Portal self-update
 - Light and dark themes (follows the OS by default; switch in the top bar)
+- GPU processes: who runs what on each GPU (user, VRAM, runtime, Docker/K8s pod), with end-process
+- Metric history charts (GPU temperature / utilization / fan / VRAM, CPU / memory), kept 7 days
+- Disk space per disk and per user on each disk
 - Tailscale installation, authentication, status, and logout
 - Linux user creation, deletion, UID/GID display, and optional password reset
 - Web administrator password management
@@ -178,7 +181,18 @@ See [SECURITY.md](SECURITY.md) for additional security information.
 No open-source license is currently included. Add an appropriate `LICENSE` file before distributing the project under specific reuse or redistribution terms.
 
 
-## v2.5.0
+## v2.6.0
+
+- **GPU 程序**: every compute process per GPU with its Linux user, VRAM, runtime, command, and Docker / K8s
+  pod name; per-user totals; admins can send SIGTERM, then SIGKILL if the process ignores it. Only PIDs that
+  are currently on a GPU can be signalled.
+- **歷史圖表**: a background thread samples GPU temperature, utilization, fan, VRAM, CPU and memory every
+  minute into `/var/lib/server-admin-portal/metrics.db` (SQLite, kept 7 days). Ranges: 1 h / 6 h / 24 h / 7 d.
+  History starts when this version is deployed.
+- **硬碟空間**: free space per disk, and space used per user on each disk. The per-user scan
+  (`find -xdev` under `ionice -c3 nice -n19`) runs every night at 03:00 and on demand; results are cached in
+  `/var/lib/server-admin-portal/disk-usage.json`.
+- Static assets carry a content-hash `?v=` so browsers load new CSS/JS right after an update.
 
 - Refreshed UI: one token-based stylesheet, sidebar icons, temperature-coloured GPU rings (amber ≥ 70 °C, red ≥ 85 °C).
 - Light / dark theme switch (自動 → 淺色 → 深色), remembered per browser; also on the login page.

@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Server Admin Portal · Login</title>
-  <link rel="stylesheet" href="{{ base_path }}/static/style.css" />
+  <link rel="stylesheet" href="{{ base_path }}/static/style.css?v={{ asset_version }}" />
   <script>try{var t=localStorage.getItem("portal-theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
 </head>
 <body class="login-body">
@@ -19,6 +19,6 @@
       <button class="primary" type="submit">登入</button>
     </form>
   </main>
-  <script src="{{ base_path }}/static/theme.js"></script>
+  <script src="{{ base_path }}/static/theme.js?v={{ asset_version }}"></script>
 </body>
 </html>
