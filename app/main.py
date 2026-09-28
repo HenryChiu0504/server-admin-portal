@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
+import functools
 import json
 import os
 import pwd
@@ -54,6 +55,12 @@ def run(
     except subprocess.TimeoutExpired as exc:
         partial = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
         return subprocess.CompletedProcess(cmd, 124, f"{partial}\n指令逾時（{timeout} 秒）：{' '.join(cmd)}".strip())
+
+
+async def in_thread(func, *args, **kwargs):
+    # asyncio.to_thread() needs Python 3.9; Ubuntu 20.04 ships Python 3.8.
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, functools.partial(func, *args, **kwargs))
 
 
 @app.exception_handler(Exception)
@@ -469,7 +476,7 @@ def upgradable_packages() -> list[str]:
 @app.get("/api/packages/status")
 async def api_packages_status(request: Request):
     require_auth(request)
-    packages = await asyncio.to_thread(upgradable_packages)
+    packages = await in_thread(upgradable_packages)
     return {
         "running": pkg_upgrade_running(),
         "upgradable": packages,
@@ -483,10 +490,10 @@ async def api_packages_refresh(request: Request):
     require_root()
     if pkg_upgrade_running():
         raise HTTPException(status_code=409, detail="套件更新進行中，請稍後再試")
-    result = await asyncio.to_thread(run, ["apt-get", "update", "-o", "DPkg::Lock::Timeout=60"], 180)
+    result = await in_thread(run, ["apt-get", "update", "-o", "DPkg::Lock::Timeout=60"], 180)
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stdout[-4000:])
-    packages = await asyncio.to_thread(upgradable_packages)
+    packages = await in_thread(upgradable_packages)
     return {"ok": True, "message": f"共有 {len(packages)} 個套件可更新", "upgradable": packages}
 
 
@@ -571,7 +578,7 @@ async def api_portal_check_update(request: Request):
         if not (PROJECT_DIR / ".git").exists():
             raise HTTPException(status_code=400, detail=f"{PROJECT_DIR} 不是 Git clone，無法線上更新；請參考 README 重新以 git clone 部署")
         raise HTTPException(status_code=500, detail="無法讀取 Git 版本資訊：" + probe.stdout.strip()[-1000:])
-    fetch = await asyncio.to_thread(portal_git, "fetch", "--quiet", "origin", timeout=60)
+    fetch = await in_thread(portal_git, "fetch", "--quiet", "origin", timeout=60)
     if fetch.returncode != 0:
         raise HTTPException(status_code=502, detail="無法連線 GitHub：" + fetch.stdout.strip()[-1000:])
     upstream = portal_git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", timeout=5).stdout.strip() or "origin/main"
@@ -681,10 +688,10 @@ async def terminal_ws(websocket: WebSocket):
             pass
         os.close(master)
         try:
-            await asyncio.to_thread(proc.wait, 5)
+            await in_thread(proc.wait, 5)
         except subprocess.TimeoutExpired:
             proc.kill()
-            await asyncio.to_thread(proc.wait)
+            await in_thread(proc.wait)
 
 
 @app.get("/api/users")
