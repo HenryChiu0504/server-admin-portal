@@ -22,6 +22,15 @@
 .compact-meters .ring-label{margin-top:0;line-height:1.2}
 .compact-meters .ring-sub{margin-top:6px;line-height:1.5}
 
+/* v2.3 web TTY + package update */
+.tty-card{padding:10px;background:#07090b}
+#tty{height:min(68vh,720px);min-height:320px}
+#tty .xterm{height:100%;padding:6px}
+.check{display:flex;gap:9px;align-items:flex-start;margin-top:14px;color:var(--muted);font-size:13px;line-height:1.5}
+.check input{margin-top:3px;accent-color:var(--accent)}
+.pkg-log{margin-top:16px;height:min(50vh,460px)}
+button:disabled{opacity:.55;cursor:not-allowed}
+
 /* v2.1.6 small breathing room below telemetry */
 .content{padding-top:52px}
 @media(max-width:980px){.content{padding-top:38px}}

@@ -19,7 +19,7 @@ CONF="$VHOST_DIR/default.conf"
 [[ -f "$CONF" ]] || { echo "找不到 $CONF"; exit 1; }
 cp -a "$CONF" "$CONF.bak.$(date +%Y%m%d-%H%M%S)"
 
-docker exec "$CONTAINER" a2enmod proxy proxy_http >/dev/null
+docker exec "$CONTAINER" a2enmod proxy proxy_http proxy_wstunnel >/dev/null
 
 python3 - "$CONF" "$PATH_PREFIX" "$GATEWAY" "$UPSTREAM_PORT" <<'PY'
 from pathlib import Path
@@ -28,7 +28,7 @@ conf=Path(sys.argv[1]); path=sys.argv[2].rstrip('/'); gateway=sys.argv[3]; port=
 text=conf.read_text()
 start='# BEGIN SERVER-ADMIN-PORTAL'
 end='# END SERVER-ADMIN-PORTAL'
-block=f'''{start}\n    RedirectMatch 302 ^{re.escape(path)}$ {path}/\n    ProxyPreserveHost On\n    ProxyPass        {path}/ http://{gateway}:{port}/\n    ProxyPassReverse {path}/ http://{gateway}:{port}/\n{end}'''
+block=f'''{start}\n    RedirectMatch 302 ^{re.escape(path)}$ {path}/\n    ProxyPreserveHost On\n    ProxyPass        {path}/api/terminal/ws ws://{gateway}:{port}/api/terminal/ws\n    ProxyPass        {path}/ http://{gateway}:{port}/\n    ProxyPassReverse {path}/ http://{gateway}:{port}/\n{end}'''
 if start in text and end in text:
     text=re.sub(re.escape(start)+r'.*?'+re.escape(end), block, text, flags=re.S)
 else:
