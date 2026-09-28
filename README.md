@@ -14,6 +14,7 @@ The project is designed for NVIDIA GPU workstations and multi-GPU servers, and s
 - Browser-based terminal (TTY) with per-user Linux login
 - One-click apt package update
 - About page with GitHub link and one-click Portal self-update
+- Light and dark themes (follows the OS by default; switch in the top bar)
 - Tailscale installation, authentication, status, and logout
 - Linux user creation, deletion, UID/GID display, and optional password reset
 - Web administrator password management
@@ -176,6 +177,12 @@ See [SECURITY.md](SECURITY.md) for additional security information.
 
 No open-source license is currently included. Add an appropriate `LICENSE` file before distributing the project under specific reuse or redistribution terms.
 
+
+## v2.5.0
+
+- Refreshed UI: one token-based stylesheet, sidebar icons, temperature-coloured GPU rings (amber ≥ 70 °C, red ≥ 85 °C).
+- Light / dark theme switch (自動 → 淺色 → 深色), remembered per browser; also on the login page.
+- The layout now follows the real height of the top telemetry bar, so page headings are never hidden under it.
 
 ## v2.4.0
 
