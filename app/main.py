@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
+import functools
 import json
 import os
 import pwd
@@ -37,16 +38,35 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 
-def run(cmd: list[str], timeout: int = 30, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        cmd,
-        text=True,
-        input=input_text,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=timeout,
-        check=False,
-    )
+def run(
+    cmd: list[str], timeout: int = 30, input_text: str | None = None, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            cmd,
+            text=True,
+            input=input_text,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+            check=False,
+            env={**os.environ, **env} if env else None,
+        )
+    except subprocess.TimeoutExpired as exc:
+        partial = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        return subprocess.CompletedProcess(cmd, 124, f"{partial}\n指令逾時（{timeout} 秒）：{' '.join(cmd)}".strip())
+
+
+async def in_thread(func, *args, **kwargs):
+    # asyncio.to_thread() needs Python 3.9; Ubuntu 20.04 ships Python 3.8.
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, functools.partial(func, *args, **kwargs))
+
+
+@app.exception_handler(Exception)
+async def unhandled_error(request: Request, exc: Exception):
+    # Surface the cause in the UI instead of a bare "HTTP 500".
+    return JSONResponse({"detail": f"{type(exc).__name__}: {exc}"}, status_code=500)
 
 
 def sse_command(cmd: list[str]) -> StreamingResponse:
@@ -456,7 +476,7 @@ def upgradable_packages() -> list[str]:
 @app.get("/api/packages/status")
 async def api_packages_status(request: Request):
     require_auth(request)
-    packages = await asyncio.to_thread(upgradable_packages)
+    packages = await in_thread(upgradable_packages)
     return {
         "running": pkg_upgrade_running(),
         "upgradable": packages,
@@ -470,10 +490,10 @@ async def api_packages_refresh(request: Request):
     require_root()
     if pkg_upgrade_running():
         raise HTTPException(status_code=409, detail="套件更新進行中，請稍後再試")
-    result = await asyncio.to_thread(run, ["apt-get", "update", "-o", "DPkg::Lock::Timeout=60"], 180)
+    result = await in_thread(run, ["apt-get", "update", "-o", "DPkg::Lock::Timeout=60"], 180)
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stdout[-4000:])
-    packages = await asyncio.to_thread(upgradable_packages)
+    packages = await in_thread(upgradable_packages)
     return {"ok": True, "message": f"共有 {len(packages)} 個套件可更新", "upgradable": packages}
 
 
@@ -513,10 +533,12 @@ def portal_git(*args: str, timeout: int = 15) -> subprocess.CompletedProcess[str
     # `-c safe.directory`, so on "dubious ownership" register the exception in
     # the system config (as git's own hint suggests) and retry once.
     cmd = ["git", "-C", str(PROJECT_DIR), "-c", f"safe.directory={PROJECT_DIR}", *args]
-    result = run(cmd, timeout=timeout)
+    # Never wait for a password / host-key prompt that nobody can answer.
+    env = {"GIT_TERMINAL_PROMPT": "0", "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o ConnectTimeout=15"}
+    result = run(cmd, timeout=timeout, env=env)
     if result.returncode != 0 and "dubious ownership" in result.stdout:
         run(["git", "config", "--system", "--add", "safe.directory", str(PROJECT_DIR)], timeout=5)
-        result = run(cmd, timeout=timeout)
+        result = run(cmd, timeout=timeout, env=env)
     return result
 
 
@@ -556,7 +578,7 @@ async def api_portal_check_update(request: Request):
         if not (PROJECT_DIR / ".git").exists():
             raise HTTPException(status_code=400, detail=f"{PROJECT_DIR} 不是 Git clone，無法線上更新；請參考 README 重新以 git clone 部署")
         raise HTTPException(status_code=500, detail="無法讀取 Git 版本資訊：" + probe.stdout.strip()[-1000:])
-    fetch = await asyncio.to_thread(portal_git, "fetch", "--quiet", "origin", timeout=60)
+    fetch = await in_thread(portal_git, "fetch", "--quiet", "origin", timeout=60)
     if fetch.returncode != 0:
         raise HTTPException(status_code=502, detail="無法連線 GitHub：" + fetch.stdout.strip()[-1000:])
     upstream = portal_git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", timeout=5).stdout.strip() or "origin/main"
@@ -666,10 +688,10 @@ async def terminal_ws(websocket: WebSocket):
             pass
         os.close(master)
         try:
-            await asyncio.to_thread(proc.wait, 5)
+            await in_thread(proc.wait, 5)
         except subprocess.TimeoutExpired:
             proc.kill()
-            await asyncio.to_thread(proc.wait)
+            await in_thread(proc.wait)
 
 
 @app.get("/api/users")
