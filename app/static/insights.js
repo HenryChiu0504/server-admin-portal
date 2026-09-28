@@ -248,3 +248,135 @@ qs('#disk-scan').onclick = async () => {
   try { const r = await api('/api/disks/scan', {method: 'POST'}); log(r.message); refreshDisks(); }
   catch (e) { log('啟動掃描失敗：' + e.message); }
 };
+
+// ---------------------------------------------------------------- Dashboard cards
+function dashBadge(id, text, cls = '') {
+  const b = qs(`#${id}-badge`);
+  if (!b) return;
+  b.textContent = text || '';
+  b.className = `badge ${cls}` + (text ? '' : ' hidden');
+}
+let dashPkgAt = 0;
+
+async function refreshDashboard() {
+  const jobs = [
+    api('/api/gpu/processes').then(d => {
+      const busy = new Set(d.processes.map(p => p.gpu));
+      const users = [...new Set(d.processes.map(p => p.user || '未知'))];
+      qs('#dash-gpu').textContent = d.gpus.length
+        ? `${busy.size} / ${d.gpus.length} 張使用中` + (users.length ? ` · ${users.join('、')}` : ' · 全部閒置')
+        : '未偵測到 GPU';
+      dashBadge('dash-gpu', d.gpus.length && busy.size === d.gpus.length ? '全部使用中' : '', 'warn');
+    }),
+    api('/api/disks').then(d => {
+      const worst = [...d.disks].sort((a, b) => b.percent - a.percent)[0];
+      qs('#dash-disk').textContent = worst
+        ? `${d.disks.length} 顆硬碟 · 最滿：${worst.mount} 剩 ${fmtBytes(worst.free)}（已用 ${worst.percent.toFixed(0)}%）`
+        : '找不到硬碟';
+      const full = d.disks.filter(k => k.percent >= 90).length, high = d.disks.filter(k => k.percent >= 80).length;
+      dashBadge('dash-disk', full ? `${full} 顆空間不足` : high ? `${high} 顆偏高` : '', full ? 'bad' : 'warn');
+    }),
+    api('/api/portal/update-status').then(d => {
+      qs('#dash-update').classList.toggle('hidden', !d.update_available);
+      if (d.update_available) {
+        qs('#dash-update-title').textContent = `Server Admin Portal 有新版本（${d.behind} 個更新）`;
+        qs('#dash-update-sub').textContent = d.latest ? `最新：${d.latest.hash} · ${d.latest.date} · ${d.latest.subject}` : '';
+      }
+    }),
+    refreshFan(),
+  ];
+  // apt is slow; check packages at most every 10 minutes.
+  if (Date.now() - dashPkgAt > 600000) {
+    dashPkgAt = Date.now();
+    jobs.push(api('/api/packages/status').then(d => {
+      const n = d.upgradable.length;
+      qs('#dash-pkg').textContent = d.running ? '套件更新進行中…' : n ? `${n} 個套件可更新` : '已是最新';
+      dashBadge('dash-pkg', d.reboot_required ? '需重新開機' : '', 'warn');
+    }));
+  }
+  await Promise.allSettled(jobs);
+}
+setInterval(() => { if (pageActive('dashboard')) refreshDashboard(); }, 30000);
+refreshDashboard();
+
+// ---------------------------------------------------------------- Fan curve editor
+const CURVE_PRESETS = {
+  quiet: [[45, 50], [65, 55], [75, 70], [82, 85], [88, 95]],
+  standard: [[40, 50], [60, 60], [70, 70], [78, 85], [85, 95]],
+  cool: [[35, 60], [55, 70], [65, 80], [72, 90], [78, 95]],
+};
+const CURVE = {points: CURVE_PRESETS.standard.map(p => [...p]), dirty: false, state: null, enabled: false};
+
+function syncCurve(curve) {
+  if (!curve) return;
+  CURVE.state = curve.state;
+  CURVE.enabled = curve.enabled;
+  // Never overwrite points the user is still editing.
+  if (!CURVE.dirty) CURVE.points = curve.points.map(p => [...p]);
+  renderCurve();
+}
+
+function renderCurve() {
+  const box = qs('#curve-points');
+  if (!box) return;
+  if (!box.contains(document.activeElement)) {
+    box.innerHTML = CURVE.points.map((p, i) => `<div class="curve-row"><label>溫度<input type="number" min="20" max="100" value="${p[0]}" data-i="${i}" data-k="0"><span>°C</span></label>
+      <span class="muted">→</span><label>風扇<input type="number" min="50" max="95" value="${p[1]}" data-i="${i}" data-k="1"><span>%</span></label></div>`).join('');
+    qsa('#curve-points input').forEach(inp => inp.oninput = () => {
+      const v = Number(inp.value);
+      if (Number.isFinite(v)) { CURVE.points[+inp.dataset.i][+inp.dataset.k] = v; CURVE.dirty = true; drawCurve(); }
+    });
+  }
+  drawCurve();
+  const st = CURVE.state, el = qs('#curve-status');
+  if (!CURVE.enabled) el.textContent = '溫度曲線目前未啟用。';
+  else if (st?.error) el.innerHTML = `<span class="warn-text">⚠ ${esc(st.error)}</span>`;
+  else if (st?.max_temp != null) el.textContent = `運作中：最熱 GPU ${st.hot_gpu} ${st.max_temp.toFixed(0)}°C → 目標 ${st.target}%，目前 ${st.applied ?? '—'}%（${Math.max(0, Math.round(Date.now() / 1000 - st.updated_at))} 秒前更新）`;
+  else el.textContent = '運作中，等待第一次檢查…';
+}
+
+function drawCurve() {
+  const box = qs('#curve-chart');
+  if (!box) return;
+  const W = Math.max(260, box.clientWidth || 360), H = 200, M = {l: 38, r: 12, t: 10, b: 26};
+  const iw = W - M.l - M.r, ih = H - M.t - M.b;
+  const x = t => M.l + (Math.min(100, Math.max(20, t)) - 20) / 80 * iw;
+  const y = s => M.t + ih - (Math.min(100, Math.max(40, s)) - 40) / 60 * ih;
+  const pts = [...CURVE.points].sort((a, b) => a[0] - b[0]);
+  const line = [[20, pts[0][1]], ...pts, [100, pts[pts.length - 1][1]]];
+  const hot = CURVE.state?.max_temp;
+  const speedAt = t => {
+    if (t <= pts[0][0]) return pts[0][1];
+    for (let i = 1; i < pts.length; i++) if (t <= pts[i][0]) return Math.round(pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * (t - pts[i - 1][0]) / (pts[i][0] - pts[i - 1][0]));
+    return pts[pts.length - 1][1];
+  };
+  box.innerHTML = `<svg class="chart" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="風扇溫度曲線">
+    ${[40, 60, 80, 100].map(s => `<line class="grid" x1="${M.l}" x2="${W - M.r}" y1="${y(s)}" y2="${y(s)}"/><text class="tick" x="${M.l - 6}" y="${y(s) + 4}" text-anchor="end">${s}%</text>`).join('')}
+    ${[20, 40, 60, 80, 100].map(t => `<text class="tick" x="${x(t)}" y="${H - 6}" text-anchor="middle">${t}°C</text>`).join('')}
+    <line class="axis" x1="${M.l}" x2="${W - M.r}" y1="${M.t + ih}" y2="${M.t + ih}"/>
+    <path d="${line.map((p, i) => `${i ? 'L' : 'M'}${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join('')}" fill="none" stroke="var(--s1)" stroke-width="2" stroke-linejoin="round"/>
+    ${pts.map(p => `<circle cx="${x(p[0])}" cy="${y(p[1])}" r="4" fill="var(--s1)" class="dot"/>`).join('')}
+    ${hot != null && CURVE.enabled ? `<line class="crosshair" x1="${x(hot)}" x2="${x(hot)}" y1="${M.t}" y2="${M.t + ih}"/>
+      <text class="tick" x="${x(hot) + (x(hot) > W - 110 ? -6 : 6)}" y="${M.t + 12}" text-anchor="${x(hot) > W - 110 ? 'end' : 'start'}">目前 ${hot.toFixed(0)}°C → ${speedAt(hot)}%</text>` : ''}
+  </svg>`;
+}
+
+async function applyCurve() {
+  const points = [...CURVE.points].sort((a, b) => a[0] - b[0]);
+  try {
+    const r = await api('/api/fan/curve', {method: 'POST', body: JSON.stringify({enabled: true, points})});
+    log(r.message);
+    CURVE.dirty = false;
+    await refreshFan();
+    return true;
+  } catch (e) { log('套用溫度曲線失敗：' + e.message); alert(e.message); return false; }
+}
+
+qsa('.curve-presets [data-preset]').forEach(b => b.onclick = () => {
+  CURVE.points = CURVE_PRESETS[b.dataset.preset].map(p => [...p]);
+  CURVE.dirty = true;
+  qs('#curve-points').innerHTML = '';
+  renderCurve();
+});
+window.addEventListener('resize', () => { if (pageActive('fan')) drawCurve(); });
+renderCurve();

@@ -241,6 +241,30 @@ dialog::backdrop{background:var(--backdrop);backdrop-filter:blur(4px)}
 .brand-mark{width:46px;height:46px;border-radius:13px;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;font-weight:900;font-size:20px}
 .login-theme{position:fixed;top:16px;right:16px}
 
+/* Fan curve */
+.curve-wrap{margin-top:20px;display:grid;gap:12px;max-width:900px}
+.curve-wrap>p{margin:0}
+.curve-presets{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.curve-body{display:grid;grid-template-columns:auto minmax(0,1fr);gap:22px;align-items:center}
+.curve-points{display:grid;gap:8px}
+.curve-row{display:flex;align-items:center;gap:10px}
+.curve-row label{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:13px}
+.curve-row input{width:64px;background:var(--surface-2);border:1px solid var(--border);color:var(--text);padding:7px 8px;border-radius:8px;font-variant-numeric:tabular-nums}
+.curve-row input:focus{border-color:var(--accent);outline:none;box-shadow:0 0 0 3px var(--accent-soft)}
+.curve-chart{min-width:0}
+.curve-status{margin:0}
+.warn-text{color:var(--warn)}
+@media (max-width:700px){.curve-body{grid-template-columns:1fr}}
+
+/* Dashboard */
+.status-top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;width:100%}
+.dash-grid{margin-bottom:16px}
+.update-banner{display:flex;align-items:center;gap:14px;padding:14px 18px;margin-bottom:16px;border-radius:var(--radius);border:1px solid var(--ok-border);background:var(--ok-bg);color:var(--accent)}
+.update-banner svg{width:22px;height:22px;flex:0 0 auto}
+.update-banner>div{flex:1;min-width:0;display:grid;gap:2px}
+.update-banner strong{color:var(--text)}
+.update-banner .muted{font-size:12.5px;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
 /* GPU processes */
 .user-chips{display:flex;flex-wrap:wrap;gap:8px;margin:-8px 0 16px}
 .user-chip{display:inline-flex;gap:8px;align-items:baseline;padding:7px 12px;border:1px solid var(--border);border-radius:999px;background:var(--surface);font-size:13px}
@@ -313,6 +337,10 @@ svg.chart .hit{cursor:crosshair}
 .muted-row .bar-fill{background:var(--faint)}
 
 @media (max-width:700px){
+  .update-banner{flex-wrap:wrap}
+  .update-banner>div{flex-basis:calc(100% - 40px)}
+  .update-banner .primary{width:100%}
+  .update-banner .muted{white-space:normal}
   .gpu-grid,.disk-list{grid-template-columns:1fr}
   .proc-row{grid-template-columns:minmax(0,1fr) auto}
   .proc-kill{grid-column:1 / -1;justify-self:start}

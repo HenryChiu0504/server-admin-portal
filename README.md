@@ -9,7 +9,7 @@ The project is designed for NVIDIA GPU workstations and multi-GPU servers, and s
 - Real-time CPU and system memory monitoring
 - Dynamic NVIDIA GPU discovery
 - Per-GPU temperature, fan speed, VRAM, and utilization monitoring
-- NVIDIA GPU automatic and manual fan control
+- NVIDIA GPU fan control: Auto, Manual, or a temperature curve
 - One-click NVIDIA fan-control recovery
 - Browser-based terminal (TTY) with per-user Linux login
 - One-click apt package update
@@ -180,6 +180,18 @@ See [SECURITY.md](SECURITY.md) for additional security information.
 
 No open-source license is currently included. Add an appropriate `LICENSE` file before distributing the project under specific reuse or redistribution terms.
 
+
+## v2.7.0
+
+- **溫度曲線** fan mode: every 10 s all fans follow the hottest GPU along an editable curve (presets 安靜 / 標準 /
+  強冷). Speed rises immediately and falls at most 5% per check; if temperatures cannot be read 3 times in a
+  row, fans go to 95%. Stored in `/var/lib/server-admin-portal/fan-curve.json`; Auto / Manual turn it off.
+- Dashboard: update banner, GPU usage, fan, disk, package, Tailscale and user cards with warning badges.
+- `update.sh` fixes the `After=multi-user.target` ordering of existing `nvidia-fan-x.service` installs (takes
+  effect at next boot; the running fan service is not restarted).
+- Blocking system calls no longer stall the backend: such endpoints run in the thread pool, so a slow request
+  (Tailscale, apt, git) does not delay monitoring or the web terminal.
+- Fan page: a mode picked but not yet applied is no longer reset by the 5-second refresh.
 
 ## v2.6.0
 
