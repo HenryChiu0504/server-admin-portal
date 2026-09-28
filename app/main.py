@@ -37,16 +37,29 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 
-def run(cmd: list[str], timeout: int = 30, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        cmd,
-        text=True,
-        input=input_text,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=timeout,
-        check=False,
-    )
+def run(
+    cmd: list[str], timeout: int = 30, input_text: str | None = None, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            cmd,
+            text=True,
+            input=input_text,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+            check=False,
+            env={**os.environ, **env} if env else None,
+        )
+    except subprocess.TimeoutExpired as exc:
+        partial = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        return subprocess.CompletedProcess(cmd, 124, f"{partial}\n指令逾時（{timeout} 秒）：{' '.join(cmd)}".strip())
+
+
+@app.exception_handler(Exception)
+async def unhandled_error(request: Request, exc: Exception):
+    # Surface the cause in the UI instead of a bare "HTTP 500".
+    return JSONResponse({"detail": f"{type(exc).__name__}: {exc}"}, status_code=500)
 
 
 def sse_command(cmd: list[str]) -> StreamingResponse:
@@ -513,10 +526,12 @@ def portal_git(*args: str, timeout: int = 15) -> subprocess.CompletedProcess[str
     # `-c safe.directory`, so on "dubious ownership" register the exception in
     # the system config (as git's own hint suggests) and retry once.
     cmd = ["git", "-C", str(PROJECT_DIR), "-c", f"safe.directory={PROJECT_DIR}", *args]
-    result = run(cmd, timeout=timeout)
+    # Never wait for a password / host-key prompt that nobody can answer.
+    env = {"GIT_TERMINAL_PROMPT": "0", "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o ConnectTimeout=15"}
+    result = run(cmd, timeout=timeout, env=env)
     if result.returncode != 0 and "dubious ownership" in result.stdout:
         run(["git", "config", "--system", "--add", "safe.directory", str(PROJECT_DIR)], timeout=5)
-        result = run(cmd, timeout=timeout)
+        result = run(cmd, timeout=timeout, env=env)
     return result
 
 
