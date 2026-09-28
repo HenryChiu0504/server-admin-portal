@@ -22,6 +22,11 @@ cp "$DST/nginx-server-admin-portal.conf" /etc/nginx/sites-available/server-admin
 ln -sf /etc/nginx/sites-available/server-admin-portal /etc/nginx/sites-enabled/server-admin-portal
 rm -f /etc/nginx/sites-enabled/default
 
+# PAM profile for the web file manager (password + account checks).
+if [[ ! -f /etc/pam.d/server-admin-portal ]]; then
+  printf '@include common-auth\n@include common-account\n' > /etc/pam.d/server-admin-portal
+fi
+
 # Older fan-control installs ordered nvidia-fan-x.service After=multi-user.target,
 # so a stuck boot job (e.g. plymouth-quit-wait) kept it from starting. Fix the
 # ordering in place; the running fan service is not restarted (applies next boot).
