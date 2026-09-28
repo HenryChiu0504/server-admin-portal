@@ -53,6 +53,11 @@ if ! grep -q '^DEFAULT_LINUX_PASSWORD=' /etc/server-admin-portal.env; then
   echo 'DEFAULT_LINUX_PASSWORD=' >> /etc/server-admin-portal.env
 fi
 
+# PAM profile for the web file manager (password + account checks).
+if [[ ! -f /etc/pam.d/server-admin-portal ]]; then
+  printf '@include common-auth\n@include common-account\n' > /etc/pam.d/server-admin-portal
+fi
+
 cp "$DST/server-admin-portal.service" /etc/systemd/system/server-admin-portal.service
 cp "$DST/nginx-server-admin-portal.conf" /etc/nginx/sites-available/server-admin-portal
 ln -sf /etc/nginx/sites-available/server-admin-portal /etc/nginx/sites-enabled/server-admin-portal

@@ -12,6 +12,7 @@ The project is designed for NVIDIA GPU workstations and multi-GPU servers, and s
 - NVIDIA GPU fan control: Auto, Manual, or a temperature curve
 - One-click NVIDIA fan-control recovery
 - Browser-based terminal (TTY) with per-user Linux login
+- Web file manager (WinSCP-like) with per-user Linux login: browse, upload, download (folders as zip), edit, progress bars
 - One-click apt package update
 - About page with GitHub link and one-click Portal self-update
 - Light and dark themes (follows the OS by default; switch in the top bar)
@@ -180,6 +181,21 @@ See [SECURITY.md](SECURITY.md) for additional security information.
 
 No open-source license is currently included. Add an appropriate `LICENSE` file before distributing the project under specific reuse or redistribution terms.
 
+
+## v2.8.0 — 檔案管理
+
+- **檔案管理** page: sign in with a Linux account (PAM, `/etc/pam.d/server-admin-portal`), then browse, create
+  folders/files, rename, delete, edit text files (≤ 2 MB, UTF-8, Ctrl+S), upload (multiple files, drag and drop)
+  and download. Folders or multi-selections download as one zip.
+- Every file operation runs **as the signed-in user** (`setpriv` + `app/fileops.py`, passed to `/usr/bin/python3 -c`),
+  so the kernel enforces that user's permissions even though the Portal runs as root. root and system accounts
+  (UID < 1000) cannot sign in; 5 wrong passwords lock the address for 1 minute. File-manager logins use their own
+  cookie and expire after 8 idle hours.
+- Progress bars: uploads go in 8 MB chunks (no proxy size limits; failed chunks retry), zips are built on the server
+  with progress (temporary file in `/var/lib/server-admin-portal/zip-tmp`, removed after download or 1 hour; refused
+  when the system disk lacks space), and downloads show progress. Chrome/Edge write straight to disk; other browsers
+  keep files up to 1.5 GB in memory and hand larger ones to the browser's own downloader.
+- nginx streams `/api/files/` without buffering. New dependency: `python-pam` (installed by `update.sh`).
 
 ## v2.7.0
 

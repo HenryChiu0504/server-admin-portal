@@ -9,20 +9,24 @@ import os
 import pwd
 import re
 import secrets
+import shutil
 import signal
 import sqlite3
 import struct
 import subprocess
+import sys
 import termios
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 import psutil
 from fastapi import FastAPI, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -1291,6 +1295,350 @@ def api_delete_user(username: str, request: Request):
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stdout.strip())
     return {"ok": True, "message": f"使用者 {username} 已刪除"}
+
+
+# ---------------------------------------------------------------------------
+# Web file manager (WinSCP-like). Users sign in with their Linux account;
+# every file operation runs as that user through app/fileops.py + setpriv.
+# ---------------------------------------------------------------------------
+
+FILEOPS = BASE_DIR / "fileops.py"
+FM_SESSION_HOURS = 8
+FM_CHUNK_MAX = 16 * 1024 * 1024
+FM_ZIP_DIR = DATA_DIR / "zip-tmp"
+fm_failures: dict[str, list[float]] = {}
+fm_jobs: dict[str, dict[str, Any]] = {}
+fm_jobs_lock = threading.Lock()
+
+
+def fm_pam_service() -> str:
+    return "server-admin-portal" if Path("/etc/pam.d/server-admin-portal").exists() else "login"
+
+
+def fm_client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for", "")
+    return (fwd.split(",")[0].strip() if fwd else "") or (request.client.host if request.client else "?")
+
+
+# File-manager logins live server-side behind their own cookie. Keeping them
+# out of the Portal session cookie matters: every Portal response re-sends
+# that cookie, so a dashboard poll in flight during login would overwrite it.
+FM_COOKIE = "portal_fm"
+fm_sessions: dict[str, dict[str, Any]] = {}
+
+
+def fm_lookup(request: Request) -> dict[str, Any] | None:
+    s = fm_sessions.get(request.cookies.get(FM_COOKIE, ""))
+    if not s or s["exp"] < time.time():
+        return None
+    s["exp"] = time.time() + FM_SESSION_HOURS * 3600  # sliding expiry
+    return s
+
+
+def fm_user(request: Request) -> dict[str, Any]:
+    require_auth(request)
+    s = fm_lookup(request)
+    if s is None:
+        raise HTTPException(status_code=403, detail="FM_LOGIN")
+    return s
+
+
+FM_PYTHON = "/usr/bin/python3" if os.path.exists("/usr/bin/python3") else sys.executable
+
+
+def fm_cmd(user: dict[str, Any], *args: str) -> list[str]:
+    # The helper source is passed with -c: the user never needs read access to
+    # the Portal's own folders or virtualenv. It only uses the standard library.
+    return ["setpriv", f"--reuid={user['uid']}", f"--regid={user['gid']}", "--init-groups",
+            FM_PYTHON, "-c", FILEOPS.read_text(), *args]
+
+
+def fm_env(user: dict[str, Any]) -> dict[str, str]:
+    return {"HOME": user["home"], "USER": user["name"], "LOGNAME": user["name"], "LANG": "C.UTF-8",
+            "PATH": "/usr/local/bin:/usr/bin:/bin"}
+
+
+def fm_run(user: dict[str, Any], *args: str, data: bytes | None = None, timeout: int = 120) -> Any:
+    try:
+        proc = subprocess.run(fm_cmd(user, *args), input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              env=fm_env(user), timeout=timeout, check=False)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="檔案操作逾時")
+    if proc.returncode != 0:
+        message = "檔案操作失敗"
+        for line in proc.stderr.decode(errors="replace").splitlines():
+            if line.startswith("E "):
+                try:
+                    message = json.loads(line[2:])["error"]
+                except (ValueError, KeyError):
+                    pass
+        raise HTTPException(status_code=400, detail=message)
+    return json.loads(proc.stdout.decode() or "null")
+
+
+def fm_path(user: dict[str, Any], path: str | None) -> str:
+    path = (path or "").strip() or user["home"]
+    if "\0" in path:
+        raise HTTPException(status_code=400, detail="路徑不合法")
+    if not path.startswith("/"):
+        path = os.path.join(user["home"], path)
+    return os.path.normpath(path)
+
+
+def fm_disposition(name: str) -> str:
+    ascii_name = re.sub(r'[^A-Za-z0-9._-]', "_", name) or "download"
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{urllib.parse.quote(name)}"
+
+
+@app.get("/api/files/session")
+def api_fm_session(request: Request):
+    require_auth(request)
+    s = fm_lookup(request)
+    return {"user": s["name"], "home": s["home"]} if s else {"user": None}
+
+
+@app.post("/api/files/login")
+async def api_fm_login(request: Request):
+    require_auth(request)
+    require_root()
+    body = await request.json()
+    username, password = str(body.get("username", "")).strip(), str(body.get("password", ""))
+    ip = fm_client_ip(request)
+    recent = [t for t in fm_failures.get(ip, []) if time.time() - t < 60]
+    if len(recent) >= 5:
+        raise HTTPException(status_code=429, detail="密碼錯誤太多次，請 1 分鐘後再試")
+    try:
+        pw = pwd.getpwnam(username) if re.fullmatch(r"[a-z_][a-z0-9_.-]*", username) else None
+    except KeyError:
+        pw = None
+    import pam  # python-pam
+    ok = False
+    if pw is not None and pw.pw_uid >= 1000 and pw.pw_name != "nobody":
+        ok = await in_thread(pam.pam().authenticate, username, password, service=fm_pam_service())
+    if not ok:
+        fm_failures[ip] = recent + [time.time()]
+        raise HTTPException(status_code=401, detail="帳號或密碼錯誤（root 與系統帳號不能登入檔案管理）")
+    fm_failures.pop(ip, None)
+    for token, old in list(fm_sessions.items()):
+        if old["exp"] < time.time():
+            fm_sessions.pop(token, None)
+    token = secrets.token_urlsafe(32)
+    fm_sessions[token] = {"name": pw.pw_name, "uid": pw.pw_uid, "gid": pw.pw_gid, "home": pw.pw_dir,
+                          "exp": time.time() + FM_SESSION_HOURS * 3600}
+    response = JSONResponse({"user": pw.pw_name, "home": pw.pw_dir})
+    response.set_cookie(FM_COOKIE, token, httponly=True, samesite="lax", max_age=FM_SESSION_HOURS * 3600)
+    return response
+
+
+@app.post("/api/files/logout")
+def api_fm_logout(request: Request):
+    require_auth(request)
+    fm_sessions.pop(request.cookies.get(FM_COOKIE, ""), None)
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(FM_COOKIE)
+    return response
+
+
+@app.get("/api/files/list")
+def api_fm_list(request: Request, path: str = ""):
+    user = fm_user(request)
+    return fm_run(user, "list", fm_path(user, path), timeout=30)
+
+
+@app.get("/api/files/read")
+def api_fm_read(request: Request, path: str):
+    user = fm_user(request)
+    return fm_run(user, "read", fm_path(user, path), timeout=30)
+
+
+@app.post("/api/files/write")
+async def api_fm_write(request: Request):
+    user = fm_user(request)
+    body = await request.json()
+    return await in_thread(fm_run, user, "write", fm_path(user, body.get("path")), data=str(body.get("content", "")).encode())
+
+
+@app.post("/api/files/mkdir")
+async def api_fm_mkdir(request: Request):
+    user = fm_user(request)
+    body = await request.json()
+    return await in_thread(fm_run, user, "mkdir", fm_path(user, body.get("path")))
+
+
+@app.post("/api/files/rename")
+async def api_fm_rename(request: Request):
+    user = fm_user(request)
+    body = await request.json()
+    return await in_thread(fm_run, user, "rename", fm_path(user, body.get("src")), fm_path(user, body.get("dst")))
+
+
+@app.post("/api/files/delete")
+async def api_fm_delete(request: Request):
+    user = fm_user(request)
+    body = await request.json()
+    paths = [fm_path(user, p) for p in body.get("paths") or []]
+    if not paths or any(p in ("/", user["home"]) for p in paths):
+        raise HTTPException(status_code=400, detail="不能刪除這個位置")
+    return await in_thread(fm_run, user, "delete", *paths, timeout=600)
+
+
+def fm_part_path(dest: str, upload_id: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9]{8,40}", upload_id):
+        raise HTTPException(status_code=400, detail="上傳編號不合法")
+    return os.path.join(os.path.dirname(dest), f".portal-upload-{upload_id}")
+
+
+@app.post("/api/files/upload")
+async def api_fm_upload(request: Request, path: str, id: str, offset: int = 0, last: int = 0, overwrite: int = 0):
+    # Chunked upload: each request carries one chunk as the raw body. Chunks
+    # keep every request small (no proxy size limits) and give real progress.
+    user = fm_user(request)
+    dest = fm_path(user, path)
+    part = fm_part_path(dest, id)
+    data = await request.body()
+    if len(data) > FM_CHUNK_MAX:
+        raise HTTPException(status_code=413, detail="上傳片段太大")
+    result = await in_thread(fm_run, user, "append", part, str(offset), data=data, timeout=300)
+    if last:
+        await in_thread(fm_run, user, "finish", part, dest, "1" if overwrite else "0")
+    return {"size": result["size"], "done": bool(last)}
+
+
+@app.post("/api/files/upload/abort")
+async def api_fm_upload_abort(request: Request):
+    user = fm_user(request)
+    body = await request.json()
+    dest = fm_path(user, body.get("path"))
+    return await in_thread(fm_run, user, "abort", fm_part_path(dest, str(body.get("id", ""))))
+
+
+@app.get("/api/files/download")
+def api_fm_download(request: Request, path: str):
+    user = fm_user(request)
+    target = fm_path(user, path)
+    info = fm_run(user, "stat", target, timeout=30)
+    if not info.get("readable"):
+        raise HTTPException(status_code=400, detail="沒有權限")
+    proc = subprocess.Popen(fm_cmd(user, "cat", target), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=fm_env(user))
+
+    def stream():
+        try:
+            assert proc.stdout is not None
+            while True:
+                chunk = proc.stdout.read(1024 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            proc.kill()
+            proc.wait()
+
+    return StreamingResponse(stream(), media_type="application/octet-stream", headers={
+        "Content-Length": str(info["size"]), "Content-Disposition": fm_disposition(os.path.basename(target)),
+        "Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+def fm_zip_worker(job: dict[str, Any], user: dict[str, Any], paths: list[str]) -> None:
+    try:
+        with open(job["file"], "wb") as out:
+            proc = subprocess.Popen(fm_cmd(user, "zip", str(job["total"]), *paths), stdout=out,
+                                    stderr=subprocess.PIPE, env=fm_env(user))
+            job["proc"] = proc
+            assert proc.stderr is not None
+            for raw in proc.stderr:
+                line = raw.decode(errors="replace").strip()
+                if line.startswith("P "):
+                    job["done"] = int(line.split()[1])
+                elif line.startswith("E "):
+                    try:
+                        job["error"] = json.loads(line[2:])["error"]
+                    except (ValueError, KeyError):
+                        job["error"] = "壓縮失敗"
+            code = proc.wait()
+        if job["state"] == "cancelled":
+            return
+        if code != 0:
+            job.update(state="error", error=job.get("error") or f"壓縮失敗（{code}）")
+        else:
+            job.update(state="ready", size=os.path.getsize(job["file"]), done=job["total"])
+    except Exception as exc:
+        job.update(state="error", error=str(exc))
+    finally:
+        if job["state"] != "ready":
+            Path(job["file"]).unlink(missing_ok=True)
+
+
+def fm_sweep_jobs() -> None:
+    # Remove zip files nobody downloaded within an hour.
+    with fm_jobs_lock:
+        for jid, job in list(fm_jobs.items()):
+            if time.time() - job["created"] > 3600:
+                Path(job["file"]).unlink(missing_ok=True)
+                fm_jobs.pop(jid, None)
+
+
+@app.post("/api/files/zip")
+async def api_fm_zip(request: Request):
+    user = fm_user(request)
+    body = await request.json()
+    paths = [fm_path(user, p) for p in body.get("paths") or []]
+    if not paths:
+        raise HTTPException(status_code=400, detail="請選擇要下載的檔案或資料夾")
+    fm_sweep_jobs()
+    size = await in_thread(fm_run, user, "size", *paths, timeout=600)
+    FM_ZIP_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(FM_ZIP_DIR, 0o700)
+    free = shutil.disk_usage(FM_ZIP_DIR).free
+    if size["bytes"] > free - 2 * 1024**3:
+        raise HTTPException(status_code=507, detail=f"暫存空間不足：需要約 {size['bytes'] / 1024**3:.1f} GB，系統碟剩 {free / 1024**3:.1f} GB")
+    jid = secrets.token_hex(12)
+    name = (os.path.basename(paths[0]) if len(paths) == 1 else os.path.basename(os.path.dirname(paths[0])) or "files") + ".zip"
+    job = {"id": jid, "uid": user["uid"], "state": "running", "done": 0, "total": size["bytes"], "files": size["files"],
+           "name": name, "file": str(FM_ZIP_DIR / f"{jid}.zip"), "created": time.time(), "error": None}
+    with fm_jobs_lock:
+        fm_jobs[jid] = job
+    threading.Thread(target=fm_zip_worker, args=(job, user, paths), daemon=True).start()
+    return {"id": jid, "total": job["total"], "files": job["files"], "name": name}
+
+
+def fm_job(request: Request, jid: str) -> dict[str, Any]:
+    user = fm_user(request)
+    job = fm_jobs.get(jid)
+    if not job or job["uid"] != user["uid"]:
+        raise HTTPException(status_code=404, detail="找不到這個壓縮工作")
+    return job
+
+
+@app.get("/api/files/zip/{jid}")
+def api_fm_zip_status(request: Request, jid: str):
+    job = fm_job(request, jid)
+    return {k: job.get(k) for k in ("id", "state", "done", "total", "files", "name", "size", "error")}
+
+
+@app.post("/api/files/zip/{jid}/cancel")
+def api_fm_zip_cancel(request: Request, jid: str):
+    job = fm_job(request, jid)
+    job["state"] = "cancelled"
+    if job.get("proc"):
+        job["proc"].kill()
+    Path(job["file"]).unlink(missing_ok=True)
+    fm_jobs.pop(jid, None)
+    return {"ok": True}
+
+
+@app.get("/api/files/zip/{jid}/download")
+def api_fm_zip_download(request: Request, jid: str):
+    job = fm_job(request, jid)
+    if job["state"] != "ready":
+        raise HTTPException(status_code=409, detail="壓縮尚未完成")
+
+    def cleanup() -> None:
+        Path(job["file"]).unlink(missing_ok=True)
+        fm_jobs.pop(jid, None)
+
+    return FileResponse(job["file"], media_type="application/zip", headers={
+        "Content-Disposition": fm_disposition(job["name"]), "Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        background=BackgroundTask(cleanup))
 
 
 @app.get("/healthz")
