@@ -407,9 +407,45 @@ PKG_UNIT = "server-admin-portal-pkg-upgrade.service"
 PKG_LOG = Path("/var/log/server-admin-portal/pkg-upgrade.log")
 
 
-def pkg_upgrade_running() -> bool:
-    state = run(["systemctl", "is-active", PKG_UNIT], timeout=5).stdout.strip()
+def unit_running(unit: str) -> bool:
+    state = run(["systemctl", "is-active", unit], timeout=5).stdout.strip()
     return state in {"active", "activating", "reloading"}
+
+
+def pkg_upgrade_running() -> bool:
+    return unit_running(PKG_UNIT)
+
+
+def start_detached(unit: str, log: Path, cmd: list[str], env: dict[str, str]) -> None:
+    # systemd-run detaches the job from this HTTP request / backend process so
+    # a closed browser tab or a Portal restart never interrupts it.
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("")
+    result = run(
+        ["systemd-run", f"--unit={unit}", "--collect", "--quiet"]
+        + [f"--setenv={k}={v}" for k, v in env.items()]
+        + cmd,
+        timeout=15,
+    )
+    if result.returncode != 0:
+        raise HTTPException(status_code=500, detail=result.stdout.strip() or f"無法啟動 {unit}")
+
+
+def read_job_log(log: Path, offset: int) -> dict[str, Any]:
+    data = b""
+    if log.exists():
+        with log.open("rb") as f:
+            f.seek(max(0, offset))
+            data = f.read(256 * 1024)
+    # Only hand out complete lines so multi-byte characters are never split.
+    end = data.rfind(b"\n") + 1
+    text = data[:end].decode("utf-8", errors="replace")
+    exit_code = None
+    match = re.search(r"^__EXIT__ (\d+)$", text, flags=re.M)
+    if match:
+        exit_code = int(match.group(1))
+        text = re.sub(r"^__EXIT__ \d+\n?", "", text, flags=re.M)
+    return {"text": text, "offset": max(0, offset) + end, "exit_code": exit_code}
 
 
 def upgradable_packages() -> list[str]:
@@ -449,44 +485,99 @@ async def api_packages_upgrade(request: Request):
     keep_nvidia = bool(body.get("keep_nvidia", True))
     if pkg_upgrade_running():
         raise HTTPException(status_code=409, detail="套件更新已在進行中")
-    PKG_LOG.parent.mkdir(parents=True, exist_ok=True)
-    PKG_LOG.write_text("")
-    # systemd-run detaches apt from this HTTP request / backend process so a
-    # closed browser tab or a Portal restart never interrupts dpkg.
-    result = run([
-        "systemd-run", f"--unit={PKG_UNIT}", "--collect", "--quiet",
-        f"--setenv=KEEP_NVIDIA={'1' if keep_nvidia else '0'}",
-        f"--setenv=PKG_UPGRADE_LOG={PKG_LOG}",
-        "/bin/bash", str(TOOLS_DIR / "pkg_upgrade.sh"),
-    ], timeout=15)
-    if result.returncode != 0:
-        raise HTTPException(status_code=500, detail=result.stdout.strip() or "無法啟動套件更新")
+    start_detached(
+        PKG_UNIT, PKG_LOG, ["/bin/bash", str(TOOLS_DIR / "pkg_upgrade.sh")],
+        {"KEEP_NVIDIA": "1" if keep_nvidia else "0", "PKG_UPGRADE_LOG": str(PKG_LOG)},
+    )
     return {"ok": True, "message": "已開始更新套件"}
 
 
 @app.get("/api/packages/log")
 async def api_packages_log(request: Request, offset: int = 0):
     require_auth(request)
-    data = b""
-    if PKG_LOG.exists():
-        with PKG_LOG.open("rb") as f:
-            f.seek(max(0, offset))
-            data = f.read(256 * 1024)
-    # Only hand out complete lines so multi-byte characters are never split.
-    end = data.rfind(b"\n") + 1
-    text = data[:end].decode("utf-8", errors="replace")
-    exit_code = None
-    match = re.search(r"^__EXIT__ (\d+)$", text, flags=re.M)
-    if match:
-        exit_code = int(match.group(1))
-        text = re.sub(r"^__EXIT__ \d+\n?", "", text, flags=re.M)
     return {
-        "text": text,
-        "offset": max(0, offset) + end,
+        **read_job_log(PKG_LOG, offset),
         "running": pkg_upgrade_running(),
-        "exit_code": exit_code,
         "reboot_required": Path("/var/run/reboot-required").exists(),
     }
+
+
+PORTAL_UNIT = "server-admin-portal-self-update.service"
+PORTAL_LOG = Path("/var/log/server-admin-portal/portal-update.log")
+PORTAL_REPO_URL = "https://github.com/HenryChiu0504/server-admin-portal"
+
+
+def portal_git(*args: str, timeout: int = 15) -> subprocess.CompletedProcess[str]:
+    # The backend runs as root while the checkout may belong to another user.
+    return run(["git", "-C", str(PROJECT_DIR), "-c", f"safe.directory={PROJECT_DIR}", *args], timeout=timeout)
+
+
+def portal_repo_url() -> str:
+    url = portal_git("remote", "get-url", "origin", timeout=5).stdout.strip()
+    match = re.fullmatch(r"(?:https://|git@)github\.com[/:]([\w.-]+/[\w.-]+?)(?:\.git)?/?", url)
+    return f"https://github.com/{match.group(1)}" if match else PORTAL_REPO_URL
+
+
+def portal_commit(ref: str) -> dict[str, str] | None:
+    result = portal_git("log", "-1", "--format=%h%x09%cs%x09%s", ref, timeout=5)
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    short, date, subject = (result.stdout.strip().split("\t", 2) + ["", ""])[:3]
+    return {"hash": short, "date": date, "subject": subject}
+
+
+@app.get("/api/portal/about")
+async def api_portal_about(request: Request):
+    require_auth(request)
+    is_git = portal_git("rev-parse", "--is-inside-work-tree", timeout=5).stdout.strip() == "true"
+    return {
+        "repo_url": portal_repo_url() if is_git else PORTAL_REPO_URL,
+        "git": is_git,
+        "branch": portal_git("rev-parse", "--abbrev-ref", "HEAD", timeout=5).stdout.strip() if is_git else None,
+        "current": portal_commit("HEAD") if is_git else None,
+        "updating": unit_running(PORTAL_UNIT),
+    }
+
+
+@app.post("/api/portal/check-update")
+async def api_portal_check_update(request: Request):
+    require_auth(request)
+    require_root()
+    if portal_git("rev-parse", "--is-inside-work-tree", timeout=5).stdout.strip() != "true":
+        raise HTTPException(status_code=400, detail=f"{PROJECT_DIR} 不是 Git clone，無法線上更新；請參考 README 重新以 git clone 部署")
+    fetch = await asyncio.to_thread(portal_git, "fetch", "--quiet", "origin", timeout=60)
+    if fetch.returncode != 0:
+        raise HTTPException(status_code=502, detail="無法連線 GitHub：" + fetch.stdout.strip()[-1000:])
+    upstream = portal_git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", timeout=5).stdout.strip() or "origin/main"
+    behind = portal_git("rev-list", "--count", f"HEAD..{upstream}", timeout=5).stdout.strip()
+    log = portal_git("log", "--format=%h %s", f"HEAD..{upstream}", "-20", timeout=5).stdout.strip()
+    count = int(behind) if behind.isdigit() else 0
+    return {
+        "update_available": count > 0,
+        "behind": count,
+        "current": portal_commit("HEAD"),
+        "latest": portal_commit(upstream),
+        "changes": log.splitlines() if log else [],
+    }
+
+
+@app.post("/api/portal/update")
+async def api_portal_update(request: Request):
+    require_auth(request)
+    require_root()
+    if unit_running(PORTAL_UNIT):
+        raise HTTPException(status_code=409, detail="Portal 更新已在進行中")
+    start_detached(
+        PORTAL_UNIT, PORTAL_LOG, ["/bin/bash", str(TOOLS_DIR / "portal_update.sh")],
+        {"PORTAL_UPDATE_LOG": str(PORTAL_LOG)},
+    )
+    return {"ok": True, "message": "已開始更新 Server Admin Portal"}
+
+
+@app.get("/api/portal/update/log")
+async def api_portal_update_log(request: Request, offset: int = 0):
+    require_auth(request)
+    return {**read_job_log(PORTAL_LOG, offset), "running": unit_running(PORTAL_UNIT)}
 
 
 def websocket_same_origin(websocket: WebSocket) -> bool:

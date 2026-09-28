@@ -13,6 +13,7 @@ The project is designed for NVIDIA GPU workstations and multi-GPU servers, and s
 - One-click NVIDIA fan-control recovery
 - Browser-based terminal (TTY) with per-user Linux login
 - One-click apt package update
+- About page with GitHub link and one-click Portal self-update
 - Tailscale installation, authentication, status, and logout
 - Linux user creation, deletion, UID/GID display, and optional password reset
 - Web administrator password management
@@ -141,6 +142,13 @@ git pull
 sudo systemctl restart server-admin-portal
 ```
 
+From the web UI: **關於 → 檢查更新** compares the installation with GitHub. If a newer version exists it
+runs `git pull` and `update.sh` in the background (via `systemd-run`, since `update.sh` restarts the Portal)
+and streams the log; otherwise it reports that the Portal is already up to date. This requires a Git-based
+installation. Log: `/var/log/server-admin-portal/portal-update.log`.
+
+`update.sh` sets `core.fileMode false` so the `chmod +x` it applies to scripts never blocks the next pull.
+
 ## Uninstallation
 
 ```bash
@@ -168,6 +176,11 @@ See [SECURITY.md](SECURITY.md) for additional security information.
 
 No open-source license is currently included. Add an appropriate `LICENSE` file before distributing the project under specific reuse or redistribution terms.
 
+
+## v2.4.0
+
+- **關於** page: GitHub URL, current version, and **檢查更新** (one-click self-update from GitHub).
+- `update.sh` ignores file-mode changes and works when the checkout is owned by another user.
 
 ## v2.3.0
 

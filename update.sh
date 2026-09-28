@@ -5,7 +5,9 @@ DST=/opt/server-admin-portal
 [[ -d "$DST/.git" ]] || { echo "$DST 不是 Git clone 目錄，請先使用 GitHub clone 部署。"; exit 1; }
 
 cd "$DST"
-git pull --ff-only
+# chmod +x below must not show up as local changes that block the next pull.
+git -c safe.directory="$DST" config core.fileMode false
+git -c safe.directory="$DST" pull --ff-only
 
 python3 -m venv "$DST/.venv"
 "$DST/.venv/bin/pip" install --upgrade pip
@@ -22,4 +24,4 @@ systemctl daemon-reload
 systemctl restart server-admin-portal
 systemctl reload nginx
 
-echo "更新完成：$(cat VERSION 2>/dev/null || echo unknown)"
+echo "更新完成：$(git -c safe.directory="$DST" log --oneline -1 2>/dev/null || echo unknown)"
