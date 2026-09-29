@@ -189,12 +189,67 @@ def cmd_stat(path):
     st = os.stat(path)
     if stat.S_ISDIR(st.st_mode):
         fail("這是資料夾")
-    out({"size": st.st_size, "readable": os.access(path, os.R_OK)})
+    out({"size": st.st_size, "mtime": st.st_mtime, "readable": os.access(path, os.R_OK),
+         "writable": os.access(path, os.W_OK), "mode": stat.filemode(st.st_mode)})
 
 
-def cmd_cat(path):
+def cmd_cat(path, start="0", length="-1"):
+    start, length = int(start), int(length)
     with open(path, "rb") as f:
-        shutil.copyfileobj(f, sys.stdout.buffer, 1024 * 1024)
+        f.seek(start)
+        if length < 0:
+            shutil.copyfileobj(f, sys.stdout.buffer, 1024 * 1024)
+            return
+        while length > 0:
+            buf = f.read(min(length, 1024 * 1024))
+            if not buf:
+                break
+            sys.stdout.buffer.write(buf)
+            length -= len(buf)
+
+
+def cmd_peek(path, mode="head", limit="524288"):
+    """Text preview: the first or last `limit` bytes (logs are read from the end)."""
+    limit = int(limit)
+    size = os.path.getsize(path)
+    with open(path, "rb") as f:
+        if mode == "tail" and size > limit:
+            f.seek(size - limit)
+        data = f.read(limit)
+    sample = data[:8192]
+    if b"\0" in sample:
+        out({"binary": True, "size": size})
+        return
+    text = data.decode("utf-8", errors="replace")
+    if mode == "tail" and size > limit and "\n" in text:
+        text = text[text.index("\n") + 1:]  # drop the cut first line
+    out({"binary": False, "text": text, "size": size, "truncated": size > limit, "mode": mode,
+         "mtime": os.path.getmtime(path), "writable": os.access(path, os.W_OK)})
+
+
+def cmd_search(root, query, limit="300", seconds="20"):
+    """Case-insensitive file/folder name search below root."""
+    q, limit, deadline = query.lower(), int(limit), time.time() + float(seconds)
+    root = os.path.realpath(root)
+    results, scanned, partial = [], 0, False
+    for folder, dirs, files in os.walk(root, onerror=lambda e: None):
+        dirs[:] = sorted(d for d in dirs if not os.path.islink(os.path.join(folder, d)))
+        for name in dirs + sorted(files):
+            scanned += 1
+            if q in name.lower():
+                try:
+                    item = entry(os.path.join(folder, name), name)
+                except OSError:
+                    continue
+                item["dir"] = folder
+                results.append(item)
+                if len(results) >= limit:
+                    partial = True
+                    break
+        if partial or time.time() > deadline:
+            partial = True
+            break
+    out({"root": root, "query": query, "results": results, "scanned": scanned, "partial": partial})
 
 
 def cmd_zip(total, *paths):
@@ -242,7 +297,7 @@ def cmd_zip(total, *paths):
 COMMANDS = {
     "list": cmd_list, "read": cmd_read, "write": cmd_write, "append": cmd_append, "finish": cmd_finish,
     "abort": cmd_abort, "mkdir": cmd_mkdir, "rename": cmd_rename, "delete": cmd_delete, "size": cmd_size,
-    "stat": cmd_stat, "cat": cmd_cat, "zip": cmd_zip,
+    "stat": cmd_stat, "cat": cmd_cat, "zip": cmd_zip, "peek": cmd_peek, "search": cmd_search,
 }
 
 if __name__ == "__main__":
