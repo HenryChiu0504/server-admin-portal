@@ -182,6 +182,22 @@ See [SECURITY.md](SECURITY.md) for additional security information.
 No open-source license is currently included. Add an appropriate `LICENSE` file before distributing the project under specific reuse or redistribution terms.
 
 
+## v2.9.0 — 檔案管理預覽、檢視方式、排序與搜尋
+
+- Clicking a file now **opens a preview** instead of downloading it. Images, PDF, video and audio show inline. Text
+  files and logs show in a viewer that can jump between the start and end of the file, auto-refresh every 3 s
+  (to follow a running training log), and toggle line wrap. `.log`/`.out`/`.err` files and files over 512 KB open at
+  the end. ←/→ steps through the folder, and the viewer has buttons to download or edit the file.
+- **View modes**: list, medium icons and large icons, with image thumbnails. Choose sorting by name (natural order:
+  1, 2, 10), modified time, size or type, either from the column headers or the sort menu. Also added a toggle for
+  hidden files. View and sort choices are remembered in the browser.
+- **Search**: typing filters the current folder. Enter searches file and folder names in all subfolders; the search
+  stops after 300 results or 20 s. Click the path bar to type a path directly.
+- Safety: previews are served by `/api/files/raw`, still running as the signed-in user. Only image, PDF and media
+  types are shown inline. Everything else (including `.html` and `.svg` scripts) is sent as a download, with
+  `Content-Security-Policy: sandbox` and `nosniff`, so user files never run as pages on the Portal. Range requests
+  are supported for video seeking.
+
 ## v2.8.0 — 檔案管理
 
 - **檔案管理** page: sign in with a Linux account (PAM, `/etc/pam.d/server-admin-portal`), then browse, create

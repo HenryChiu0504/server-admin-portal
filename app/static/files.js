@@ -55,62 +55,172 @@ qs('#fm-login-form').onsubmit = async e => {
 qs('#fm-logout').onclick = async () => { await fmApi('/api/files/logout', {method: 'POST'}).catch(() => {}); fmShowLogin(); };
 
 // ------------------------------------------------------------------ browsing
+// Items carry their full path, so selection and downloads also work on search
+// results spread across folders.
+const FM_IMG = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'ico', 'svg']);
+const FM_VIDEO = new Set(['mp4', 'webm', 'mov']), FM_AUDIO = new Set(['mp3', 'wav', 'ogg', 'm4a', 'flac']);
+const FM_ICONS = {dir: '📁', img: '🖼️', video: '🎬', audio: '🎵', pdf: '📕', archive: '📦', code: '📝', table: '📊', link: '🔗', file: '📄'};
+const fmExt = name => (name.includes('.') ? name.split('.').pop() : '').toLowerCase();
+const fmIsDir = e => e.type === 'dir' || e.target_dir;
+function fmKind(e) {
+  if (fmIsDir(e)) return 'dir';
+  const x = fmExt(e.name);
+  if (FM_IMG.has(x)) return 'img';
+  if (FM_VIDEO.has(x)) return 'video';
+  if (FM_AUDIO.has(x)) return 'audio';
+  if (x === 'pdf') return 'pdf';
+  if (['zip', 'tar', 'gz', 'tgz', 'bz2', 'xz', '7z', 'rar'].includes(x)) return 'archive';
+  if (['csv', 'tsv', 'xlsx', 'xls'].includes(x)) return 'table';
+  if (['py', 'sh', 'js', 'ts', 'c', 'cpp', 'h', 'cu', 'java', 'go', 'rs', 'json', 'yaml', 'yml', 'md', 'ipynb', 'toml'].includes(x)) return 'code';
+  return e.type === 'link' ? 'link' : 'file';
+}
+const fmRaw = e => portalUrl(`/api/files/raw?path=${encodeURIComponent(e.path)}&v=${Math.round(e.mtime)}`);
+const collator = new Intl.Collator('zh-Hant', {numeric: true, sensitivity: 'base'});
+const fmPref = (k, d) => { try { return localStorage.getItem('fm-' + k) || d; } catch { return d; } };
+const fmSetPref = (k, v) => { try { localStorage.setItem('fm-' + k, v); } catch {} };
+Object.assign(FM, {view: fmPref('view', 'list'), sortKey: fmPref('sort', 'name'), sortDir: Number(fmPref('dir', '1')), filter: '', search: null});
+
 async function fmOpen(path) {
   try {
     const d = await fmApi(`/api/files/list?path=${encodeURIComponent(path)}`);
-    FM.cwd = d.path; FM.parent = d.parent; FM.entries = d.entries; FM.writable = d.writable;
-    FM.selected.clear();
+    FM.cwd = d.path; FM.parent = d.parent; FM.writable = d.writable;
+    FM.entries = d.entries.map(e => ({...e, path: fmJoin(d.path, e.name)}));
+    FM.selected.clear(); FM.search = null; FM.filter = '';
+    qs('#fm-search').value = '';
     fmRender();
   } catch (e) { alert(e.message); }
 }
+function fmSorted(list) {
+  const k = FM.sortKey, dir = FM.sortDir;
+  return [...list].sort((a, b) => {
+    const da = fmIsDir(a), db = fmIsDir(b);
+    if (da !== db) return da ? -1 : 1; // folders first
+    let r = 0;
+    if (k === 'mtime') r = a.mtime - b.mtime;
+    else if (k === 'size') r = (da ? 0 : a.size) - (db ? 0 : b.size);
+    else if (k === 'type') r = collator.compare(fmExt(a.name), fmExt(b.name));
+    return (r || collator.compare(a.name, b.name)) * (k === 'name' || r ? dir : 1);
+  });
+}
+function fmVisible() {
+  const base = FM.search ? FM.search.results : FM.entries;
+  const f = FM.filter.toLowerCase();
+  return fmSorted(base.filter(e => (FM.showHidden || !e.name.startsWith('.')) && (!f || FM.search || e.name.toLowerCase().includes(f))));
+}
 function fmRender() {
+  // path bar
   const parts = FM.cwd.split('/').filter(Boolean);
   qs('#fm-crumbs').innerHTML = `<button class="fm-crumb" data-p="/">/</button>` + parts.map((p, i) =>
     `<button class="fm-crumb" data-p="/${fmEsc(parts.slice(0, i + 1).join('/'))}">${fmEsc(p)}</button>`).join('<span class="fm-sep">/</span>');
-  qsa('.fm-crumb').forEach(b => b.onclick = () => fmOpen(b.dataset.p));
+  qsa('.fm-crumb').forEach(b => b.onclick = ev => { ev.stopPropagation(); fmOpen(b.dataset.p); });
   qs('#fm-up').disabled = !FM.parent;
-  const list = FM.entries.filter(e => FM.showHidden || !e.name.startsWith('.'));
-  const isDir = e => e.type === 'dir' || e.target_dir;
-  qs('#fm-rows').innerHTML = list.map(e => {
-    const path = fmJoin(FM.cwd, e.name), dir = isDir(e);
-    return `<tr class="${FM.selected.has(e.name) ? 'selected' : ''}">
-      <td class="fm-check"><input type="checkbox" data-sel="${fmEsc(e.name)}" ${FM.selected.has(e.name) ? 'checked' : ''}></td>
-      <td><button class="fm-name ${dir ? 'dir' : ''}" data-open="${fmEsc(e.name)}">${dir ? '📁' : e.type === 'link' ? '🔗' : '📄'} ${fmEsc(e.name)}</button>${e.type === 'link' ? `<span class="muted small"> → ${fmEsc(e.link)}</span>` : ''}</td>
-      <td class="fm-num">${dir ? '' : fmSize(e.size)}</td>
-      <td class="fm-time">${new Date(e.mtime * 1000).toLocaleString('zh-TW', {hour12: false})}</td>
-      <td class="fm-mode">${fmEsc(e.mode)}</td>
-      <td class="fm-actions">${dir ? '' : `<button class="ghost compact" data-edit="${fmEsc(e.name)}">編輯</button>`}<button class="ghost compact" data-dl="${fmEsc(e.name)}">下載</button><button class="ghost compact" data-ren="${fmEsc(e.name)}">改名</button><button class="ghost compact fm-danger" data-rm="${fmEsc(e.name)}">刪除</button></td></tr>`;
-  }).join('') || '<tr><td colspan="6" class="muted">這個資料夾是空的</td></tr>';
-  qsa('[data-open]').forEach(b => b.onclick = () => {
-    const e = FM.entries.find(x => x.name === b.dataset.open);
-    isDir(e) ? fmOpen(fmJoin(FM.cwd, e.name)) : fmDownload([e.name]);
-  });
-  qsa('[data-sel]').forEach(c => c.onchange = () => { c.checked ? FM.selected.add(c.dataset.sel) : FM.selected.delete(c.dataset.sel); fmSelChanged(); });
-  qsa('[data-edit]').forEach(b => b.onclick = () => fmEdit(fmJoin(FM.cwd, b.dataset.edit)));
-  qsa('[data-dl]').forEach(b => b.onclick = () => fmDownload([b.dataset.dl]));
-  qsa('[data-ren]').forEach(b => b.onclick = () => fmRename(b.dataset.ren));
-  qsa('[data-rm]').forEach(b => b.onclick = () => fmDelete([b.dataset.rm]));
-  qs('#fm-all').checked = false;
+  qs('#fm-sort').value = FM.sortKey;
+  qs('#fm-sort-dir').textContent = FM.sortDir > 0 ? '↑' : '↓';
+  qsa('#fm-views .segment').forEach(b => b.classList.toggle('active', b.dataset.view === FM.view));
+  qs('#fm-search-clear').classList.toggle('hidden', !FM.filter && !FM.search);
+  const banner = qs('#fm-banner');
+  banner.classList.toggle('hidden', !FM.search);
+  if (FM.search) banner.innerHTML = `🔍 在 <code>${fmEsc(FM.search.root)}</code> 找到 ${FM.search.results.length} 個符合「${fmEsc(FM.search.query)}」的項目${FM.search.partial ? '（結果太多或花太久，只列出一部分，請把搜尋文字打得更精確）' : ''} <button class="ghost compact" id="fm-search-back">回到資料夾</button>`;
+  if (FM.search) qs('#fm-search-back').onclick = fmClearSearch;
+
+  const list = fmVisible();
+  FM.shown = list;
+  const box = qs('#fm-view');
+  const inSearch = !!FM.search;
+  if (FM.view === 'list') {
+    const th = (k, label, cls = '') => `<th class="fm-sortable ${cls}" data-sortkey="${k}">${label}${FM.sortKey === k ? `<span class="fm-arrow">${FM.sortDir > 0 ? '▲' : '▼'}</span>` : ''}</th>`;
+    box.innerHTML = `<div class="table-wrap"><table class="fm-table"><thead><tr><th class="fm-check"><input type="checkbox" id="fm-all"></th>${th('name', '名稱')}${inSearch ? '<th>位置</th>' : ''}${th('size', '大小', 'fm-num')}${th('mtime', '修改時間')}${th('type', '類型')}<th>權限</th><th></th></tr></thead><tbody>${
+      list.map((e, i) => `<tr data-i="${i}" class="${FM.selected.has(e.path) ? 'selected' : ''}">
+        <td class="fm-check"><input type="checkbox" data-sel="${i}" ${FM.selected.has(e.path) ? 'checked' : ''}></td>
+        <td><button class="fm-name ${fmIsDir(e) ? 'dir' : ''}" data-open="${i}"><span class="fm-ico">${FM_ICONS[fmKind(e)]}</span>${fmEsc(e.name)}</button>${e.type === 'link' ? `<span class="muted small"> → ${fmEsc(e.link)}</span>` : ''}</td>
+        ${inSearch ? `<td class="fm-loc"><button class="fm-crumb" data-goto="${fmEsc(e.dir)}">${fmEsc(e.dir)}</button></td>` : ''}
+        <td class="fm-num">${fmIsDir(e) ? '' : fmSize(e.size)}</td>
+        <td class="fm-time">${new Date(e.mtime * 1000).toLocaleString('zh-TW', {hour12: false})}</td>
+        <td class="fm-type">${fmIsDir(e) ? '資料夾' : (fmExt(e.name) || '—').toUpperCase()}</td>
+        <td class="fm-mode">${fmEsc(e.mode)}</td>
+        <td class="fm-actions"><button class="ghost compact" data-dl="${i}">下載</button><button class="ghost compact" data-ren="${i}">改名</button><button class="ghost compact fm-danger" data-rm="${i}">刪除</button></td></tr>`).join('')
+      || `<tr><td colspan="8" class="muted">${inSearch ? '找不到符合的項目' : FM.filter ? '這個資料夾沒有符合的項目' : '這個資料夾是空的'}</td></tr>`}</tbody></table></div>`;
+    qsa('.fm-sortable').forEach(h => h.onclick = () => fmSetSort(h.dataset.sortkey, FM.sortKey === h.dataset.sortkey ? -FM.sortDir : 1));
+    qs('#fm-all').onchange = ev => { list.forEach(e => ev.target.checked ? FM.selected.add(e.path) : FM.selected.delete(e.path)); fmRender(); };
+  } else {
+    box.innerHTML = `<div class="fm-grid ${FM.view}">${list.map((e, i) => {
+      const kind = fmKind(e), thumb = kind === 'img' && e.size < 25 * 1024 ** 2;
+      return `<div class="fm-tile ${FM.selected.has(e.path) ? 'selected' : ''}" data-open="${i}" title="${fmEsc(e.name)}\n${fmIsDir(e) ? '' : fmSize(e.size) + ' · '}${new Date(e.mtime * 1000).toLocaleString('zh-TW', {hour12: false})}${inSearch ? '\n' + fmEsc(e.dir) : ''}">
+        <input type="checkbox" class="fm-tile-check" data-sel="${i}" ${FM.selected.has(e.path) ? 'checked' : ''}>
+        <div class="fm-thumb">${thumb ? `<img loading="lazy" decoding="async" src="${fmRaw(e)}" alt="" onerror="this.replaceWith(document.createTextNode('🖼️'))">` : `<span>${FM_ICONS[kind]}</span>`}</div>
+        <div class="fm-tile-name">${fmEsc(e.name)}</div></div>`;
+    }).join('') || `<p class="muted">${inSearch ? '找不到符合的項目' : '這個資料夾是空的'}</p>`}</div>`;
+  }
+  qsa('[data-open]').forEach(el => el.onclick = ev => { if (ev.target.matches('input')) return; fmActivate(list[+el.dataset.open]); });
+  qsa('[data-sel]').forEach(c => { c.onclick = ev => ev.stopPropagation(); c.onchange = () => { const e = list[+c.dataset.sel]; c.checked ? FM.selected.add(e.path) : FM.selected.delete(e.path); fmSelChanged(); }; });
+  qsa('[data-goto]').forEach(b => b.onclick = () => fmOpen(b.dataset.goto));
+  qsa('[data-dl]').forEach(b => b.onclick = () => fmDownload([list[+b.dataset.dl]]));
+  qsa('[data-ren]').forEach(b => b.onclick = () => fmRename(list[+b.dataset.ren]));
+  qsa('[data-rm]').forEach(b => b.onclick = () => fmDelete([list[+b.dataset.rm]]));
   fmSelChanged();
-  const files = FM.entries.filter(e => !isDir(e)).length;
-  qs('#fm-status').textContent = `${FM.entries.length - files} 個資料夾、${files} 個檔案${FM.writable ? '' : ' · 這個資料夾你沒有寫入權限'}`;
+}
+function fmSelectedItems() {
+  const all = [...FM.entries, ...(FM.search ? FM.search.results : [])];
+  return [...FM.selected].map(p => all.find(e => e.path === p)).filter(Boolean);
 }
 function fmSelChanged() {
-  const n = FM.selected.size;
+  const items = fmSelectedItems(), n = items.length;
   qs('#fm-dl-sel').disabled = qs('#fm-del-sel').disabled = !n;
   qs('#fm-dl-sel').textContent = n ? `⬇ 下載所選（${n}）` : '⬇ 下載所選';
-  qsa('#fm-rows tr').forEach(tr => { const c = tr.querySelector('[data-sel]'); if (c) tr.classList.toggle('selected', c.checked); });
+  qsa('[data-sel]').forEach(c => (c.closest('tr') || c.closest('.fm-tile')).classList.toggle('selected', c.checked));
+  const shown = FM.shown || [], dirs = shown.filter(fmIsDir).length, bytes = items.filter(e => !fmIsDir(e)).reduce((a, e) => a + e.size, 0);
+  qs('#fm-status').textContent = `${dirs} 個資料夾、${shown.length - dirs} 個檔案` + (n ? ` · 已選 ${n} 項${bytes ? `（${fmSize(bytes)}）` : ''}` : '') + (FM.writable === false && !FM.search ? ' · 這個資料夾你沒有寫入權限' : '');
 }
-qs('#fm-all').onchange = e => {
-  FM.entries.filter(x => FM.showHidden || !x.name.startsWith('.')).forEach(x => e.target.checked ? FM.selected.add(x.name) : FM.selected.delete(x.name));
-  qsa('[data-sel]').forEach(c => c.checked = e.target.checked);
-  fmSelChanged();
-};
+function fmSetSort(key, dir) {
+  FM.sortKey = key; FM.sortDir = dir;
+  fmSetPref('sort', key); fmSetPref('dir', String(dir));
+  fmRender();
+}
+function fmActivate(e) {
+  if (fmIsDir(e)) return fmOpen(e.path);
+  fmPreview(e);
+}
+qs('#fm-sort').onchange = ev => fmSetSort(ev.target.value, FM.sortDir);
+qs('#fm-sort-dir').onclick = () => fmSetSort(FM.sortKey, -FM.sortDir);
+qsa('#fm-views .segment').forEach(b => b.onclick = () => { FM.view = b.dataset.view; fmSetPref('view', FM.view); fmRender(); });
 qs('#fm-up').onclick = () => FM.parent && fmOpen(FM.parent);
-qs('#fm-refresh').onclick = () => fmOpen(FM.cwd);
-qs('#fm-show-hidden').onchange = e => { FM.showHidden = e.target.checked; fmRender(); };
-qs('#fm-dl-sel').onclick = () => fmDownload([...FM.selected]);
-qs('#fm-del-sel').onclick = () => fmDelete([...FM.selected]);
+qs('#fm-refresh').onclick = () => (FM.search ? fmSearchDeep(FM.search.query) : fmOpen(FM.cwd));
+qs('#fm-show-hidden').onchange = ev => { FM.showHidden = ev.target.checked; fmRender(); };
+qs('#fm-dl-sel').onclick = () => fmDownload(fmSelectedItems());
+qs('#fm-del-sel').onclick = () => fmDelete(fmSelectedItems());
+
+// Type a path directly (click the empty part of the path bar).
+qs('#fm-crumbs').onclick = () => {
+  const inp = qs('#fm-path-input');
+  qs('#fm-crumbs').classList.add('hidden'); inp.classList.remove('hidden');
+  inp.value = FM.cwd; inp.focus(); inp.select();
+};
+qs('#fm-path-input').onkeydown = ev => {
+  if (ev.key === 'Enter') { fmOpen(ev.target.value.trim()); ev.target.blur(); }
+  if (ev.key === 'Escape') ev.target.blur();
+};
+qs('#fm-path-input').onblur = () => { qs('#fm-path-input').classList.add('hidden'); qs('#fm-crumbs').classList.remove('hidden'); };
+
+// Search: typing filters this folder; Enter searches every sub-folder on the server.
+async function fmSearchDeep(q) {
+  qs('#fm-status').textContent = `搜尋「${q}」中…`;
+  try {
+    const d = await fmApi(`/api/files/search?path=${encodeURIComponent(FM.cwd)}&q=${encodeURIComponent(q)}`);
+    d.results = d.results.map(e => ({...e, path: fmJoin(e.dir, e.name)}));
+    FM.search = d; FM.selected.clear();
+    fmRender();
+  } catch (e) { alert(e.message); fmSelChanged(); }
+}
+function fmClearSearch() {
+  FM.search = null; FM.filter = ''; qs('#fm-search').value = ''; FM.selected.clear();
+  fmRender();
+}
+qs('#fm-search').oninput = ev => { FM.filter = ev.target.value.trim(); if (!FM.search) fmRender(); };
+qs('#fm-search').onkeydown = ev => {
+  if (ev.key === 'Enter' && ev.target.value.trim()) fmSearchDeep(ev.target.value.trim());
+  if (ev.key === 'Escape') fmClearSearch();
+};
+qs('#fm-search-clear').onclick = fmClearSearch;
 
 qs('#fm-mkdir').onclick = async () => {
   const name = prompt('新資料夾名稱');
@@ -123,16 +233,105 @@ qs('#fm-newfile').onclick = async () => {
   if (FM.entries.some(e => e.name === name)) return alert('已經有同名的檔案');
   try { await fmApi('/api/files/write', {method: 'POST', body: JSON.stringify({path: fmJoin(FM.cwd, name), content: ''})}); await fmOpen(FM.cwd); fmEdit(fmJoin(FM.cwd, name)); } catch (e) { alert(e.message); }
 };
-async function fmRename(name) {
-  const to = prompt('新名稱', name);
-  if (!to || to === name) return;
-  try { await fmApi('/api/files/rename', {method: 'POST', body: JSON.stringify({src: fmJoin(FM.cwd, name), dst: fmJoin(FM.cwd, to)})}); fmOpen(FM.cwd); } catch (e) { alert(e.message); }
+async function fmRename(e) {
+  const to = prompt('新名稱', e.name);
+  if (!to || to === e.name) return;
+  const dir = e.path.slice(0, e.path.length - e.name.length - 1) || '/';
+  try { await fmApi('/api/files/rename', {method: 'POST', body: JSON.stringify({src: e.path, dst: fmJoin(dir, to)})}); FM.search ? fmSearchDeep(FM.search.query) : fmOpen(FM.cwd); } catch (err) { alert(err.message); }
 }
-async function fmDelete(names) {
-  const dirs = names.filter(n => { const e = FM.entries.find(x => x.name === n); return e && e.type === 'dir'; });
-  if (!confirm(`確定刪除 ${names.length === 1 ? `「${names[0]}」` : `這 ${names.length} 個項目`}？${dirs.length ? '\n資料夾會連同裡面所有檔案一起刪除。' : ''}\n刪除後無法復原。`)) return;
-  try { await fmApi('/api/files/delete', {method: 'POST', body: JSON.stringify({paths: names.map(n => fmJoin(FM.cwd, n))})}); log(`已刪除 ${names.length} 個項目`); fmOpen(FM.cwd); } catch (e) { alert(e.message); }
+async function fmDelete(items) {
+  if (!items.length) return;
+  const dirs = items.filter(fmIsDir).length;
+  if (!confirm(`確定刪除 ${items.length === 1 ? `「${items[0].name}」` : `這 ${items.length} 個項目`}？${dirs ? '\n資料夾會連同裡面所有檔案一起刪除。' : ''}\n刪除後無法復原。`)) return;
+  try {
+    await fmApi('/api/files/delete', {method: 'POST', body: JSON.stringify({paths: items.map(e => e.path)})});
+    log(`已刪除 ${items.length} 個項目`);
+    FM.search ? fmSearchDeep(FM.search.query) : fmOpen(FM.cwd);
+  } catch (e) { alert(e.message); }
 }
+
+// ------------------------------------------------------------------ preview
+const PV = {item: null, mode: 'tail', timer: null};
+function fmPreviewList() { return (FM.shown || []).filter(e => !fmIsDir(e)); }
+async function fmPreview(e) {
+  PV.item = e;
+  clearInterval(PV.timer); PV.timer = null;
+  qs('#fm-pv-follow').checked = false;
+  const kind = fmKind(e), body = qs('#fm-pv-body');
+  qs('#fm-pv-name').textContent = e.name;
+  qs('#fm-pv-meta').textContent = `${fmSize(e.size)} · ${new Date(e.mtime * 1000).toLocaleString('zh-TW', {hour12: false})} · ${e.mode}`;
+  qs('#fm-pv-textctl').classList.add('hidden');
+  qs('#fm-pv-edit').classList.add('hidden');
+  const list = fmPreviewList(), i = list.findIndex(x => x.path === e.path);
+  qs('#fm-pv-prev').disabled = i <= 0;
+  qs('#fm-pv-next').disabled = i < 0 || i >= list.length - 1;
+  if (!qs('#fm-preview').open) qs('#fm-preview').showModal();
+  body.className = 'fm-preview-body';
+  if (kind === 'img') {
+    body.classList.add('media');
+    body.innerHTML = `<img src="${fmRaw(e)}" alt="${fmEsc(e.name)}" onload="document.getElementById('fm-pv-meta').textContent += ' · ' + this.naturalWidth + '×' + this.naturalHeight">`;
+  } else if (kind === 'video') {
+    body.classList.add('media');
+    body.innerHTML = `<video src="${fmRaw(e)}" controls autoplay></video>`;
+  } else if (kind === 'audio') {
+    body.classList.add('media');
+    body.innerHTML = `<audio src="${fmRaw(e)}" controls autoplay></audio>`;
+  } else if (kind === 'pdf') {
+    body.classList.add('media');
+    body.innerHTML = `<iframe src="${fmRaw(e)}" title="${fmEsc(e.name)}"></iframe>`;
+  } else {
+    // Anything else: try to show it as text; binary files get an info panel.
+    PV.mode = /\.(log|out|err)$/i.test(e.name) || e.size > 512 * 1024 ? 'tail' : 'head';
+    await fmPeek();
+  }
+}
+async function fmPeek(keepScroll) {
+  const e = PV.item, body = qs('#fm-pv-body');
+  let d;
+  try { d = await fmApi(`/api/files/peek?path=${encodeURIComponent(e.path)}&mode=${PV.mode}`); }
+  catch (err) { body.innerHTML = `<div class="fm-pv-info"><p>${fmEsc(err.message)}</p></div>`; return; }
+  if (PV.item !== e) return; // user moved on meanwhile
+  if (d.binary) {
+    body.innerHTML = `<div class="fm-pv-info"><div class="fm-pv-icon">${FM_ICONS[fmKind(e)]}</div><p><strong>${fmEsc(e.name)}</strong></p><p class="muted">這個檔案無法在網頁上預覽（${fmSize(d.size)}）。</p><button class="primary" onclick="fmDownload([PV.item])">⬇ 下載</button></div>`;
+    return;
+  }
+  qs('#fm-pv-textctl').classList.remove('hidden');
+  qsa('[data-pvmode]').forEach(b => b.classList.toggle('active', b.dataset.pvmode === PV.mode));
+  qs('#fm-pv-edit').classList.toggle('hidden', !(d.writable && d.size <= 2 * 1024 * 1024));
+  const old = body.querySelector('pre'), atBottom = old && old.scrollTop + old.clientHeight >= old.scrollHeight - 30;
+  body.innerHTML = `${d.truncated ? `<div class="fm-pv-note">檔案較大（${fmSize(d.size)}），只顯示${PV.mode === 'tail' ? '最後' : '最前面'} 512 KB。</div>` : ''}<pre class="fm-pv-text ${qs('#fm-pv-wrap').checked ? 'wrap' : ''}"></pre>`;
+  const pre = body.querySelector('pre');
+  pre.textContent = d.text;
+  if (PV.mode === 'tail' && (!keepScroll || atBottom)) pre.scrollTop = pre.scrollHeight;
+  if (keepScroll && !atBottom && old) pre.scrollTop = old.scrollTop;
+  qs('#fm-pv-meta').textContent = `${fmSize(d.size)} · ${new Date(d.mtime * 1000).toLocaleString('zh-TW', {hour12: false})} · ${e.mode}`;
+}
+function fmPreviewStep(dir) {
+  const list = fmPreviewList(), i = list.findIndex(x => x.path === PV.item.path);
+  if (list[i + dir]) fmPreview(list[i + dir]);
+}
+function fmClosePreview() {
+  clearInterval(PV.timer); PV.timer = null; PV.item = null;
+  qs('#fm-pv-body').innerHTML = ''; // stops video / audio
+  qs('#fm-preview').close();
+}
+qs('#fm-pv-prev').onclick = () => fmPreviewStep(-1);
+qs('#fm-pv-next').onclick = () => fmPreviewStep(1);
+qs('#fm-pv-close').onclick = fmClosePreview;
+qs('#fm-preview').addEventListener('cancel', ev => { ev.preventDefault(); fmClosePreview(); });
+qs('#fm-preview').addEventListener('keydown', ev => {
+  if (ev.target.matches('input,textarea')) return;
+  if (ev.key === 'ArrowLeft') { ev.preventDefault(); fmPreviewStep(-1); }
+  if (ev.key === 'ArrowRight') { ev.preventDefault(); fmPreviewStep(1); }
+});
+qs('#fm-pv-dl').onclick = () => PV.item && fmDownload([PV.item]);
+qs('#fm-pv-edit').onclick = () => { const p = PV.item.path; fmClosePreview(); fmEdit(p); };
+qsa('[data-pvmode]').forEach(b => b.onclick = () => { PV.mode = b.dataset.pvmode; fmPeek(); });
+qs('#fm-pv-wrap').onchange = ev => qs('.fm-pv-text')?.classList.toggle('wrap', ev.target.checked);
+qs('#fm-pv-follow').onchange = ev => {
+  clearInterval(PV.timer); PV.timer = null;
+  if (ev.target.checked) { PV.mode = 'tail'; fmPeek(); PV.timer = setInterval(() => PV.item && fmPeek(true), 3000); }
+};
 
 // ------------------------------------------------------------------ transfers panel
 function fmTask(label) {
@@ -268,8 +467,8 @@ async function fmFetchToDisk(url, name, size, handle, task) {
   }
   task.finish(`✓ 下載完成 · ${fmSize(done)}`);
 }
-async function fmDownload(names) {
-  const entries = names.map(n => FM.entries.find(e => e.name === n)).filter(Boolean);
+async function fmDownload(entries) {
+  entries = entries.filter(Boolean);
   if (!entries.length) return;
   const single = entries.length === 1 && entries[0].type !== 'dir' && !entries[0].target_dir;
   const zipName = entries.length === 1 ? `${entries[0].name}.zip` : `${FM.cwd.split('/').pop() || 'files'}.zip`;
@@ -279,11 +478,11 @@ async function fmDownload(names) {
   const task = fmTask(`⬇ ${saveName}`);
   try {
     if (single) {
-      await fmFetchToDisk(`/api/files/download?path=${encodeURIComponent(fmJoin(FM.cwd, entries[0].name))}`, saveName, entries[0].size, handle, task);
+      await fmFetchToDisk(`/api/files/download?path=${encodeURIComponent(entries[0].path)}`, saveName, entries[0].size, handle, task);
       return;
     }
     // 1) compress on the server with progress, 2) download the finished zip
-    const job = await fmApi('/api/files/zip', {method: 'POST', body: JSON.stringify({paths: entries.map(e => fmJoin(FM.cwd, e.name))})});
+    const job = await fmApi('/api/files/zip', {method: 'POST', body: JSON.stringify({paths: entries.map(e => e.path)})});
     task.onCancel = () => fmApi(`/api/files/zip/${job.id}/cancel`, {method: 'POST'}).catch(() => {});
     let st;
     for (;;) {

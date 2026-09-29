@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 
 import psutil
 from fastapi import FastAPI, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -1536,6 +1536,82 @@ def api_fm_download(request: Request, path: str):
     return StreamingResponse(stream(), media_type="application/octet-stream", headers={
         "Content-Length": str(info["size"]), "Content-Disposition": fm_disposition(os.path.basename(target)),
         "Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+# Inline preview of images / PDF / video / audio. Anything else (HTML, SVG as
+# a page, scripts, ...) is forced to download: a user's file must never run
+# as a page on the Portal's origin. The sandbox CSP is a second fence.
+FM_INLINE_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
+    ".bmp": "image/bmp", ".avif": "image/avif", ".ico": "image/x-icon", ".svg": "image/svg+xml",
+    ".pdf": "application/pdf", ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
+    ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg", ".m4a": "audio/mp4", ".flac": "audio/flac",
+}
+
+
+@app.get("/api/files/peek")
+def api_fm_peek(request: Request, path: str, mode: str = "head", limit: int = 524288):
+    user = fm_user(request)
+    limit = max(4096, min(limit, 4 * 1024 * 1024))
+    return fm_run(user, "peek", fm_path(user, path), "tail" if mode == "tail" else "head", str(limit), timeout=30)
+
+
+@app.get("/api/files/search")
+def api_fm_search(request: Request, path: str, q: str):
+    user = fm_user(request)
+    q = q.strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="請輸入要搜尋的文字")
+    return fm_run(user, "search", fm_path(user, path), q, "300", "20", timeout=40)
+
+
+@app.get("/api/files/raw")
+def api_fm_raw(request: Request, path: str):
+    user = fm_user(request)
+    target = fm_path(user, path)
+    info = fm_run(user, "stat", target, timeout=30)
+    if not info.get("readable"):
+        raise HTTPException(status_code=400, detail="沒有權限")
+    size = info["size"]
+    ctype = FM_INLINE_TYPES.get(os.path.splitext(target)[1].lower())
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "private, max-age=600",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'",
+        "Content-Disposition": fm_disposition(os.path.basename(target)).replace("attachment", "inline", 1) if ctype
+                               else fm_disposition(os.path.basename(target)),
+    }
+    start, end, status = 0, size - 1, 200
+    match = re.fullmatch(r"bytes=(\d*)-(\d*)", request.headers.get("range", "").strip())
+    if match and size > 0 and (match.group(1) or match.group(2)):
+        if match.group(1):
+            start = int(match.group(1))
+            end = min(int(match.group(2)), size - 1) if match.group(2) else size - 1
+        else:  # suffix range: the last N bytes
+            start = max(0, size - int(match.group(2)))
+        if start > end or start >= size:
+            return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
+        status = 206
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    length = max(0, end - start + 1)
+    headers["Content-Length"] = str(length)
+    proc = subprocess.Popen(fm_cmd(user, "cat", target, str(start), str(length)), stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, env=fm_env(user))
+
+    def stream():
+        try:
+            assert proc.stdout is not None
+            while True:
+                chunk = proc.stdout.read(1024 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            proc.kill()
+            proc.wait()
+
+    return StreamingResponse(stream(), status_code=status, media_type=ctype or "application/octet-stream", headers=headers)
 
 
 def fm_zip_worker(job: dict[str, Any], user: dict[str, Any], paths: list[str]) -> None:
