@@ -41,7 +41,7 @@
 投票 2317 4/25-5/24   手動設定投票期間（以股東e服務為準，所有人共用）
 ```
 
-## 後台（http://NAS:8000/admin）
+## 後台（http://NAS:13999/admin）
 
 先在 `.env` 設 `ADMIN_PASSWORD`，登入帳號預設為 `admin`。
 
@@ -81,8 +81,8 @@
 
 ### 2. 讓 LINE 連得到 NAS（webhook 必須是 HTTPS）
 任選一種方式：
-- **Cloudflare Tunnel（推薦）**：不用開 port、不用固定 IP。在 Cloudflare Zero Trust 建立 Tunnel，Public Hostname 指到 `http://bot:8000`，把 token 填進 `.env`
-- **Tailscale Funnel**：`tailscale funnel 8000`
+- **Cloudflare Tunnel（推薦）**：不用開 port、不用固定 IP。在 Cloudflare Zero Trust 建立 Tunnel，Public Hostname 指到 `http://bot:13999`，把 token 填進 `.env`
+- **Tailscale Funnel**：`tailscale funnel 13999`
 - **NAS 內建反向代理 + DDNS + Let's Encrypt**：Synology 和 QNAP 都有
 
 Webhook URL 填 `https://你的網域/callback`，然後按 Verify。
@@ -92,12 +92,12 @@ Webhook URL 填 `https://你的網域/callback`，然後按 Verify。
 cp .env.example .env      # 填入 LINE_CHANNEL_SECRET、LINE_CHANNEL_ACCESS_TOKEN
 docker compose up -d --build
 ```
-1. 打開 `http://NAS:8000/admin`，到「測試」頁按「連線自我檢查」
+1. 打開 `http://NAS:13999/admin`，到「測試」頁按「連線自我檢查」
 2. 用手機加 bot 好友並傳一句話，到後台「使用者」按**核准**，再按「設為管理員」
 3. 家人朋友也加好友，一樣在後台核准
 4. 到「測試」頁選自己和某個日期，預覽後按「推播」，確認 LINE 收得到
 
-健康檢查：`http://NAS:8000/health`
+健康檢查：`http://NAS:13999/health`
 
 ## 開發與測試
 ```bash

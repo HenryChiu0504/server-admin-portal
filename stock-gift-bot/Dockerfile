@@ -4,5 +4,5 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY bot ./bot
-EXPOSE 8000
-CMD ["uvicorn", "bot.app:app", "--host", "0.0.0.0", "--port", "8000"]
+EXPOSE 13999
+CMD ["uvicorn", "bot.app:app", "--host", "0.0.0.0", "--port", "13999"]
