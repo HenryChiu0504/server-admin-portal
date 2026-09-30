@@ -24,6 +24,12 @@
 </div>
 
 <div class="card">
+  <h2>版本</h2>
+  <p>{{ version }}</p>
+  <p class="muted">更新方式：在 NAS 上執行 <code>stock-gift-bot/update.sh</code>，或用排程每天自動跑（見 README）。紀錄在 data/update.log。</p>
+</div>
+
+<div class="card">
   <h2>排程</h2>
   <table><tr><th>工作</th><th>下次執行</th></tr>
   {% for j in jobs %}<tr><td>{{ {'refresh':'更新資料','daily':'每日提醒'}.get(j.id, j.id) }}</td><td>{{ j.next }}</td></tr>{% endfor %}

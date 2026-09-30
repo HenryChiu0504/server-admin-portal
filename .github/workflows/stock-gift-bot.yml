@@ -1,0 +1,23 @@
+name: stock-gift-bot tests
+
+on:
+  push:
+    paths: ["stock-gift-bot/**", ".github/workflows/stock-gift-bot.yml"]
+  pull_request:
+    paths: ["stock-gift-bot/**", ".github/workflows/stock-gift-bot.yml"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: stock-gift-bot
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt pytest httpx
+      - run: pytest -q
+      - name: Docker image builds
+        run: docker build -t stock-gift-bot .

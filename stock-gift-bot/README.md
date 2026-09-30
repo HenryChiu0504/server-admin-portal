@@ -81,23 +81,70 @@
 
 ### 2. 讓 LINE 連得到 NAS（webhook 必須是 HTTPS）
 任選一種方式：
-- **Cloudflare Tunnel（推薦）**：不用開 port、不用固定 IP。在 Cloudflare Zero Trust 建立 Tunnel，Public Hostname 指到 `http://bot:13999`，把 token 填進 `.env`
+- **Cloudflare Tunnel（推薦）**：不用開 port、不用固定 IP。在 Cloudflare Zero Trust 建立 Tunnel，Public Hostname 指到 `http://bot:13999`（Path 填 `callback`），把 token 填進 `.env`，並設 `COMPOSE_PROFILES=tunnel`
 - **Tailscale Funnel**：`tailscale funnel 13999`
 - **NAS 內建反向代理 + DDNS + Let's Encrypt**：Synology 和 QNAP 都有
 
 Webhook URL 填 `https://你的網域/callback`，然後按 Verify。
 
 ### 3. 在 NAS 上啟動（Synology Container Manager 或 QNAP Container Station）
+用 SSH 登入 NAS，**用 git clone 下載**（之後才能自動更新）：
 ```bash
-cp .env.example .env      # 填入 LINE_CHANNEL_SECRET、LINE_CHANNEL_ACCESS_TOKEN
+cd /volume1/docker        # Synology 範例；QNAP 可用 /share/Container
+git clone https://github.com/HenryChiu0504/server-admin-portal.git
+cd server-admin-portal/stock-gift-bot
+cp .env.example .env      # 填入 LINE_CHANNEL_SECRET、LINE_CHANNEL_ACCESS_TOKEN、ADMIN_PASSWORD
 docker compose up -d --build
 ```
+> 如果 repo 是 private，clone 時密碼欄請貼 GitHub 的 Personal Access Token（只需 Contents: Read 權限）。
+> 可以用 `git config --global credential.helper store` 讓 NAS 記住 token，排程更新時就不用再輸入。
+> Synology 請先到套件中心安裝 **Git Server**（或 SynoCommunity 的 Git）才有 `git` 指令。
 1. 打開 `http://NAS:13999/admin`，到「測試」頁按「連線自我檢查」
 2. 用手機加 bot 好友並傳一句話，到後台「使用者」按**核准**，再按「設為管理員」
 3. 家人朋友也加好友，一樣在後台核准
 4. 到「測試」頁選自己和某個日期，預覽後按「推播」，確認 LINE 收得到
 
 健康檢查：`http://NAS:13999/health`
+
+## 更新
+
+改好的程式推到 GitHub 的 `main` 分支後，NAS 執行 `update.sh` 就會更新：
+
+```bash
+cd /volume1/docker/server-admin-portal/stock-gift-bot
+./update.sh               # 有新版才更新
+./update.sh --force       # 沒新版也重建
+BRANCH=其他分支 ./update.sh  # 追蹤 main 以外的分支
+```
+
+`update.sh` 的流程：git fetch → 有新版才 pull → `docker compose up -d --build` → 檢查 `/health`。
+
+- **新版啟動失敗**：自動退回上一版，之後也不會再裝那個壞掉的版本。等 GitHub 上有更新的版本才會再試
+- **不會動到的資料**：`.env` 和 `data/`（資料庫、紀錄）都不在 git 裡，更新不會影響
+- **本機改過程式檔**：更新會停下來，不會覆蓋你的修改。客製化請寫在 `.env` 或 `docker-compose.override.yml`
+- **紀錄與版本**：寫在 `data/update.log`；目前版本會顯示在後台總覽
+
+### 自動更新（推薦）
+**Synology**：控制台 → 任務排程表 → 新增 → 排定的任務 → 使用者定義的指令碼
+- 使用者：`root`
+- 時間：每天 **03:00**（避開 08:40 更新資料、09:10 提醒）
+- 指令：`bash /volume1/docker/server-admin-portal/stock-gift-bot/update.sh`
+
+**QNAP 或其他 Linux**：`crontab -e`，加入：
+```
+0 3 * * * bash /share/Container/server-admin-portal/stock-gift-bot/update.sh >/dev/null 2>&1
+```
+
+### 其他更新方式
+| 方式 | 做法 | 適合 |
+|---|---|---|
+| 排程自動更新（上面） | 每天自動檢查 GitHub | 推薦，不用管 |
+| 手動 | SSH 登入後執行 `./update.sh` | 想自己控制更新時間 |
+| Container Manager 介面 | 先 `git pull`，再在「專案」按「建置」 | 不熟指令但會用 NAS 介面 |
+| GitHub Actions 建 image + Watchtower | Actions 把 image 推到 ghcr.io，NAS 用 Watchtower 自動拉 | NAS 效能很弱、不想在 NAS 上 build（需要時可以再加） |
+
+### GitHub 上的自動測試
+每次推送 `stock-gift-bot/` 的變更，GitHub Actions 都會跑測試並試 build Docker image（`.github/workflows/stock-gift-bot.yml`）。在 GitHub 的 Actions 頁看到綠勾，再讓 NAS 更新比較安心。
 
 ## 開發與測試
 ```bash

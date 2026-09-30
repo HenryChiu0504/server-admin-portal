@@ -1,0 +1,6 @@
+# Runtime data and secrets stay on the NAS, never in git
+.env
+data/*
+!data/.gitkeep
+!data/manual_gifts.example.csv
+docker-compose.override.yml
