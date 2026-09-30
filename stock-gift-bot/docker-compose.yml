@@ -1,0 +1,22 @@
+services:
+  bot:
+    build: .
+    container_name: stock-gift-bot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/data          # bot.db 與 manual_gifts.csv 放這裡
+    ports:
+      - "8000:8000"
+
+  # LINE webhook 必須是公開的 HTTPS 網址。用 Cloudflare Tunnel 不用開路由器 port。
+  # 在 Cloudflare Zero Trust 建立 Tunnel，把 Public Hostname 指到 http://bot:8000，
+  # 再把 token 填到 .env 的 CLOUDFLARE_TUNNEL_TOKEN。不用的話整段刪掉即可。
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - bot
