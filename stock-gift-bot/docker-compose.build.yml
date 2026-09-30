@@ -1,0 +1,7 @@
+# 在本機用原始碼 build（開發用）。NAS 平常用 GitHub 建好的 image，不需要這個檔案。
+services:
+  bot:
+    build:
+      context: .
+      args:
+        APP_VERSION: local

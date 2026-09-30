@@ -88,17 +88,19 @@
 Webhook URL 填 `https://你的網域/callback`，然後按 Verify。
 
 ### 3. 在 NAS 上啟動（Synology Container Manager 或 QNAP Container Station）
-用 SSH 登入 NAS，**用 git clone 下載**（之後才能自動更新）：
+程式由 GitHub Actions 建成 Docker image，放在 `ghcr.io/henrychiu0504/stock-gift-bot`。**NAS 不需要 git，也不用自己 build**，只要三個檔案：
+
 ```bash
-cd /volume1/docker        # Synology 範例；QNAP 可用 /share/Container
-git clone https://github.com/HenryChiu0504/server-admin-portal.git
-cd server-admin-portal/stock-gift-bot
+mkdir -p /volume1/docker/stock-gift-bot && cd /volume1/docker/stock-gift-bot   # QNAP 可用 /share/Container/...
+# 從 GitHub 下載 docker-compose.yml、update.sh、.env.example 到這個資料夾
 cp .env.example .env      # 填入 LINE_CHANNEL_SECRET、LINE_CHANNEL_ACCESS_TOKEN、ADMIN_PASSWORD
-docker compose up -d --build
+bash update.sh            # 第一次執行：下載 image 並啟動
 ```
-> 如果 repo 是 private，clone 時密碼欄請貼 GitHub 的 Personal Access Token（只需 Contents: Read 權限）。
-> 可以用 `git config --global credential.helper store` 讓 NAS 記住 token，排程更新時就不用再輸入。
-> Synology 請先到套件中心安裝 **Git Server**（或 SynoCommunity 的 Git）才有 `git` 指令。
+
+> **Image 權限**：repo 是 private 時，image 預設也是 private，NAS 會下載失敗。二選一：
+> - **把 image 設成公開（推薦）**：image 裡只有程式碼，沒有密碼（密碼都在 NAS 的 `.env`）。GitHub → 你的頭像 → Your profile → Packages → `stock-gift-bot` → Package settings → Change visibility → Public
+> - **保持 private**：在 GitHub 建一個只有 `read:packages` 權限的 Personal Access Token（classic），在 NAS 以 root 執行一次 `docker login ghcr.io -u HenryChiu0504`，密碼貼 token
+
 1. 打開 `http://NAS:13999/admin`，到「測試」頁按「連線自我檢查」
 2. 用手機加 bot 好友並傳一句話，到後台「使用者」按**核准**，再按「設為管理員」
 3. 家人朋友也加好友，一樣在後台核准
@@ -106,45 +108,42 @@ docker compose up -d --build
 
 健康檢查：`http://NAS:13999/health`
 
-## 更新
+## 更新（GitHub Actions 建 image → NAS 下載）
 
-改好的程式推到 GitHub 的 `main` 分支後，NAS 執行 `update.sh` 就會更新：
-
-```bash
-cd /volume1/docker/server-admin-portal/stock-gift-bot
-./update.sh               # 有新版才更新
-./update.sh --force       # 沒新版也重建
-BRANCH=其他分支 ./update.sh  # 追蹤 main 以外的分支
+```
+改程式 → git push 到 GitHub
+       → GitHub Actions：跑測試 → 建 image（amd64 + arm64）→ 推到 ghcr.io
+       → NAS 的 update.sh（排程每天跑）：下載新 image → 重啟 → 檢查 /health
 ```
 
-`update.sh` 的流程：git fetch → 有新版才 pull → `docker compose up -d --build` → 檢查 `/health`。
+- **main 分支**：建出來的 image 標為 `:latest`，NAS 預設追蹤這個
+- **其他分支**：image 標為分支名稱（`/` 換成 `-`），例如 `:claude-zen-maxwell-0sgq77`。想先在 NAS 試某個分支，就在 `.env` 設 `IMAGE=ghcr.io/henrychiu0504/stock-gift-bot:分支名`
+- **測試沒過**：不會產生 image，NAS 也就不會更新
+- **新版啟動失敗**：`update.sh` 自動退回上一版，之後也不會再裝那個壞掉的 image，等 GitHub 上有更新的版本才會再試
+- **不會動到的資料**：`.env` 和 `data/`（資料庫、紀錄）
+- **紀錄與版本**：寫在 `data/update.log`；後台總覽會顯示目前版本（分支@commit）
 
-- **新版啟動失敗**：自動退回上一版，之後也不會再裝那個壞掉的版本。等 GitHub 上有更新的版本才會再試
-- **不會動到的資料**：`.env` 和 `data/`（資料庫、紀錄）都不在 git 裡，更新不會影響
-- **本機改過程式檔**：更新會停下來，不會覆蓋你的修改。客製化請寫在 `.env` 或 `docker-compose.override.yml`
-- **紀錄與版本**：寫在 `data/update.log`；目前版本會顯示在後台總覽
+```bash
+bash update.sh            # 有新版才更新
+bash update.sh --force    # 沒新版也重啟
+```
 
-### 自動更新（推薦）
+### 設定自動更新
 **Synology**：控制台 → 任務排程表 → 新增 → 排定的任務 → 使用者定義的指令碼
 - 使用者：`root`
 - 時間：每天 **03:00**（避開 08:40 更新資料、09:10 提醒）
-- 指令：`bash /volume1/docker/server-admin-portal/stock-gift-bot/update.sh`
+- 指令：`bash /volume1/docker/stock-gift-bot/update.sh`
 
 **QNAP 或其他 Linux**：`crontab -e`，加入：
 ```
-0 3 * * * bash /share/Container/server-admin-portal/stock-gift-bot/update.sh >/dev/null 2>&1
+0 3 * * * bash /share/Container/stock-gift-bot/update.sh >/dev/null 2>&1
 ```
 
-### 其他更新方式
-| 方式 | 做法 | 適合 |
-|---|---|---|
-| 排程自動更新（上面） | 每天自動檢查 GitHub | 推薦，不用管 |
-| 手動 | SSH 登入後執行 `./update.sh` | 想自己控制更新時間 |
-| Container Manager 介面 | 先 `git pull`，再在「專案」按「建置」 | 不熟指令但會用 NAS 介面 |
-| GitHub Actions 建 image + Watchtower | Actions 把 image 推到 ghcr.io，NAS 用 Watchtower 自動拉 | NAS 效能很弱、不想在 NAS 上 build（需要時可以再加） |
+想馬上更新：到 GitHub 的 Actions 頁確認出現綠勾，再在 NAS 執行 `bash update.sh`。
 
-### GitHub 上的自動測試
-每次推送 `stock-gift-bot/` 的變更，GitHub Actions 都會跑測試並試 build Docker image（`.github/workflows/stock-gift-bot.yml`）。在 GitHub 的 Actions 頁看到綠勾，再讓 NAS 更新比較安心。
+### 其他方式
+- **Container Manager 介面**：「專案」→ 停止 → 「映像」頁更新 image → 啟動。這樣沒有自動退回舊版的保護
+- **用原始碼自己 build**（開發用）：`docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build`
 
 ## 開發與測試
 ```bash

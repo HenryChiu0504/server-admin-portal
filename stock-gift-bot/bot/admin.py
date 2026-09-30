@@ -1,4 +1,5 @@
 """Admin web backend at /admin (HTTP Basic auth: ADMIN_USERNAME / ADMIN_PASSWORD)."""
+import os
 import secrets
 from datetime import date
 from pathlib import Path
@@ -69,8 +70,7 @@ def build_router(service: Service, scheduler) -> APIRouter:
         except Exception as ex:
             quota = {"error": str(ex)}
         runs = db.all("SELECT * FROM scrape_runs ORDER BY id DESC LIMIT 15")
-        version_file = Path(cfg.db_path).parent / "version.txt"
-        version = version_file.read_text(encoding="utf-8").strip() if version_file.exists() else "未知（尚未用 update.sh 更新過）"
+        version = os.environ.get("APP_VERSION", "dev")
         return page(request, "dashboard.html", stats=stats, jobs=jobs, quota=quota, runs=runs, version=version,
                     refresh_date=db.get_meta("refresh_date"), refresh_errors=db.get_meta("refresh_errors"))
 

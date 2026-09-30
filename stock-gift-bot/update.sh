@@ -1,39 +1,48 @@
 #!/usr/bin/env bash
-# 從 GitHub 拉新版並重建容器。可手動執行，或交給 NAS 排程每天跑。
+# 從 GitHub Container Registry 下載 GitHub Actions 建好的新版 image 並重啟容器。
+# 可手動執行，或交給 NAS 排程每天跑。
 #   ./update.sh           有新版才更新
-#   ./update.sh --force   沒新版也重建
-# 新版啟動失敗（/health 沒回應）會自動退回上一版，而且之後不會再裝同一個壞掉的版本。
+#   ./update.sh --force   沒新版也重啟
+# 新版啟動失敗（/health 沒回應）會自動退回上一版，而且之後不會再裝同一個壞掉的 image。
 set -Eeuo pipefail
 
-BRANCH="${BRANCH:-main}"          # 要追蹤的分支，例如 BRANCH=main ./update.sh
-PORT="${PORT:-13999}"
 cd "$(dirname "$(readlink -f "$0")")"
 BOT_DIR="$PWD"
-LOG="$BOT_DIR/data/update.log"
+PORT="${PORT:-13999}"
 mkdir -p "$BOT_DIR/data"
+LOG="$BOT_DIR/data/update.log"
 log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
 
 if docker compose version >/dev/null 2>&1; then DC=(docker compose)
 elif command -v docker-compose >/dev/null 2>&1; then DC=(docker-compose)
 else log "找不到 docker compose"; exit 1; fi
 
-git config --global --get-all safe.directory 2>/dev/null | grep -qxF "$(git rev-parse --show-toplevel)" \
-  || git config --global --add safe.directory "$(git rev-parse --show-toplevel)"
+# Same default as docker-compose.yml; .env may override IMAGE.
+IMAGE="ghcr.io/henrychiu0504/stock-gift-bot:latest"
+if [[ -f .env ]] && grep -qE '^IMAGE=' .env; then IMAGE=$(grep -E '^IMAGE=' .env | tail -1 | cut -d= -f2- | tr -d '"'"'"); fi
+REPO="${IMAGE%:*}"
+PREVIOUS="$REPO:previous"
 
-git fetch --quiet origin "$BRANCH"
-OLD=$(git rev-parse HEAD)
-NEW=$(git rev-parse "origin/$BRANCH")
-BAD=$(cat "$BOT_DIR/data/.bad_commit" 2>/dev/null || true)
+image_id() { docker image inspect -f '{{.Id}}' "$1" 2>/dev/null || true; }
 
-if [[ "$OLD" == "$NEW" && "${1:-}" != "--force" ]]; then
-  echo "已是最新版 ${OLD:0:7}"; exit 0
+OLD=$(image_id "$IMAGE")
+if ! docker pull -q "$IMAGE" >/dev/null; then
+  log "下載 $IMAGE 失敗（網路問題？private image 要先 docker login ghcr.io）"; exit 1
+fi
+NEW=$(image_id "$IMAGE")
+BAD=$(cat "$BOT_DIR/data/.bad_image" 2>/dev/null || true)
+RUNNING=$(docker inspect -f '{{.Image}}' stock-gift-bot 2>/dev/null || true)
+
+if [[ "$NEW" == "$RUNNING" && "${1:-}" != "--force" ]]; then
+  echo "已是最新版 ${NEW:7:12}"; exit 0
 fi
 if [[ "$NEW" == "$BAD" && "${1:-}" != "--force" ]]; then
-  log "跳過 ${NEW:0:7}：這個版本之前啟動失敗過"; exit 0
+  [[ -n "$OLD" ]] && docker tag "$OLD" "$IMAGE"   # keep running the good one
+  log "跳過 ${NEW:7:12}：這個版本之前啟動失敗過"; exit 0
 fi
 
 deploy() {
-  "${DC[@]}" up -d --build --remove-orphans bot
+  "${DC[@]}" up -d --no-build bot
   for _ in $(seq 1 30); do
     sleep 2
     curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 && return 0
@@ -41,24 +50,22 @@ deploy() {
   return 1
 }
 
-if ! git diff --quiet HEAD -- . ; then
-  log "stock-gift-bot 內有本機修改（$(git diff --name-only HEAD -- . | tr '\n' ' ')），為避免覆蓋已停止更新。"
-  log "客製化請改寫在 .env 或 docker-compose.override.yml，或用 git checkout -- <檔案> 還原後再更新。"
-  exit 1
-fi
+# Remember what was running so we can roll back.
+GOOD="${RUNNING:-$OLD}"
+[[ -n "$GOOD" ]] && docker tag "$GOOD" "$PREVIOUS"
 
-log "更新 ${OLD:0:7} -> ${NEW:0:7} ($BRANCH)"
-git checkout --quiet "$BRANCH" 2>/dev/null || git checkout --quiet -b "$BRANCH" "origin/$BRANCH"
-git reset --quiet --hard "$NEW"
+log "更新 ${GOOD:7:12} -> ${NEW:7:12} ($IMAGE)"
 if deploy; then
-  echo "$(git log -1 --format='%h %cd %s' --date=format:'%F %R')" > "$BOT_DIR/data/version.txt"
-  rm -f "$BOT_DIR/data/.bad_commit"
+  VERSION=$(docker image inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$IMAGE" | sed -n 's/^APP_VERSION=//p')
+  rm -f "$BOT_DIR/data/.bad_image"
   docker image prune -f >/dev/null 2>&1 || true
-  log "更新完成：$(cat "$BOT_DIR/data/version.txt")"
-else
-  log "新版啟動失敗，退回 ${OLD:0:7}"
-  echo "$NEW" > "$BOT_DIR/data/.bad_commit"
-  git reset --quiet --hard "$OLD"
-  deploy && log "已退回舊版" || log "舊版也啟動失敗，請看 docker logs stock-gift-bot"
+  log "更新完成：${VERSION:-${NEW:7:12}}"
+elif [[ -n "$GOOD" ]]; then
+  log "新版啟動失敗，退回上一版"
+  echo "$NEW" > "$BOT_DIR/data/.bad_image"
+  docker tag "$PREVIOUS" "$IMAGE"
+  deploy && log "已退回上一版" || log "上一版也啟動失敗，請看 docker logs stock-gift-bot"
   exit 1
+else
+  log "啟動失敗，請看 docker logs stock-gift-bot"; exit 1
 fi

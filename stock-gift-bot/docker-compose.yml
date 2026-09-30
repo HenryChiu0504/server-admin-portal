@@ -1,6 +1,8 @@
 services:
   bot:
-    build: .
+    # GitHub Actions 建好的 image；NAS 不需要 git，也不用自己 build。
+    # 自己在本機 build 請用：docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+    image: ${IMAGE:-ghcr.io/henrychiu0504/stock-gift-bot:latest}
     container_name: stock-gift-bot
     restart: unless-stopped
     env_file: .env
@@ -13,7 +15,6 @@ services:
   # 在 Cloudflare Zero Trust 建立 Tunnel，Public Hostname 的 Path 填 callback、Service 填 http://bot:13999
   # （只開放 /callback，後台 /admin 就只能在家裡區網用 http://NAS:13999/admin 連），
   # 再把 token 填到 .env 的 CLOUDFLARE_TUNNEL_TOKEN，並在 .env 設 COMPOSE_PROFILES=tunnel 啟用。
-  # 請不要直接改這個檔案（自動更新會需要乾淨的檔案），要客製化請寫在 docker-compose.override.yml。
   tunnel:
     profiles: ["tunnel"]
     image: cloudflare/cloudflared:latest
