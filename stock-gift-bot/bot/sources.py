@@ -79,6 +79,17 @@ def roc_compact_to_date(s: str) -> date | None:
 
 
 # ---------------------------------------------------------------- gifts
+def table_headers(html: str) -> list[list[str]]:
+    """First row of every table on the page, for the admin 'raw scrape' view."""
+    soup = BeautifulSoup(html, "html.parser")
+    out = []
+    for table in soup.find_all("table"):
+        tr = table.find("tr")
+        if tr:
+            out.append([c.get_text(strip=True) for c in tr.find_all(["th", "td"])])
+    return out
+
+
 def parse_histock(html: str, today: date) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
     for table in soup.find_all("table"):
@@ -117,10 +128,14 @@ def parse_histock(html: str, today: date) -> list[dict]:
     raise ValueError("HiStock: 找不到紀念品表格，網頁格式可能改了")
 
 
-def fetch_gifts(today: date) -> list[dict]:
+def fetch_histock_html() -> str:
     r = requests.get(HISTOCK_URL, headers=UA, timeout=TIMEOUT)
     r.raise_for_status()
-    return parse_histock(r.text, today)
+    return r.text
+
+
+def fetch_gifts(today: date) -> list[dict]:
+    return parse_histock(fetch_histock_html(), today)
 
 
 def load_manual_gifts(path: str, today: date) -> list[dict]:
@@ -158,25 +173,25 @@ def _pick(row: dict, *keys):
     return None
 
 
-def fetch_prices() -> list[dict]:
+PRICE_SOURCES = (
+    ("twse", TWSE_CLOSE_URL, ("Code",), ("Name",), ("ClosingPrice",)),
+    ("tpex", TPEX_CLOSE_URL, ("SecuritiesCompanyCode", "Code"), ("CompanyName", "Name"), ("Close", "ClosingPrice")),
+)
+
+
+def fetch_prices_from(url, code_keys, name_keys, close_keys) -> list[dict]:
+    """Raises on network errors so the caller can record which source failed."""
+    r = requests.get(url, headers=UA, timeout=TIMEOUT)
+    r.raise_for_status()
     out = []
-    for url, code_keys, name_keys, close_keys in (
-        (TWSE_CLOSE_URL, ("Code",), ("Name",), ("ClosingPrice",)),
-        (TPEX_CLOSE_URL, ("SecuritiesCompanyCode", "Code"), ("CompanyName", "Name"), ("Close", "ClosingPrice")),
-    ):
-        try:
-            r = requests.get(url, headers=UA, timeout=TIMEOUT)
-            r.raise_for_status()
-            for row in r.json():
-                code = _pick(row, *code_keys)
-                close = _num(_pick(row, *close_keys))
-                if not code or close is None:
-                    continue
-                d = roc_compact_to_date(str(_pick(row, "Date") or ""))
-                out.append({"code": str(code).strip(), "name": _pick(row, *name_keys),
-                            "close": close, "trade_date": d.isoformat() if d else None})
-        except Exception:
-            log.exception("抓收盤價失敗: %s", url)
+    for row in r.json():
+        code = _pick(row, *code_keys)
+        close = _num(_pick(row, *close_keys))
+        if not code or close is None:
+            continue
+        d = roc_compact_to_date(str(_pick(row, "Date") or ""))
+        out.append({"code": str(code).strip(), "name": _pick(row, *name_keys),
+                    "close": close, "trade_date": d.isoformat() if d else None})
     return out
 
 

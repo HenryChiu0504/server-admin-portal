@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>即時爬取結果（不會存進資料庫）</h2>
+  {% if data.errors %}<div class="err">{{ data.errors|join('\n') }}</div>{% else %}<p class="ok">全部來源都抓成功</p>{% endif %}
+  <p>HiStock 網頁大小：{{ data.histock_bytes or 0 }} bytes，解析出 <b>{{ data.gifts|length }}</b> 筆紀念品。
+  台股上市收盤價 <b>{{ data.prices.twse|length }}</b> 筆、上櫃 <b>{{ data.prices.tpex|length }}</b> 筆、休市日 <b>{{ data.holidays|length }}</b> 筆。</p>
+  <form class="inline" method="post" action="/admin/refresh"><button>把這些資料存進資料庫（立即更新）</button></form>
+</div>
+
+<div class="card">
+  <h2>HiStock 網頁上的表格表頭</h2>
+  <p class="muted">解析 0 筆時看這裡：解析器找「代號、最後買進、股東會日期、紀念品」這幾個字。</p>
+  <table>{% for h in data.histock_tables or [] %}<tr><td>表格 {{ loop.index }}</td><td class="wrap">{{ h|join(' | ') }}</td></tr>{% endfor %}</table>
+</div>
+
+<div class="card">
+  <h2>紀念品（前 300 筆）</h2>
+  <table><tr><th>代號</th><th>名稱</th><th>最後買進日</th><th>股東會</th><th>紀念品</th><th>投票期間</th></tr>
+  {% for g in data.gifts[:300] %}
+  <tr><td>{{ g.code }}</td><td>{{ g.name }}</td><td>{{ g.last_buy }}</td><td>{{ g.meeting }}</td>
+  <td class="wrap">{{ g.gift }}</td><td>{{ g.vote_start or '' }}{% if g.vote_end %} ~ {{ g.vote_end }}{% endif %}</td></tr>
+  {% endfor %}</table>
+</div>
+
+<div class="card">
+  <h2>收盤價樣本</h2>
+  <table><tr><th>市場</th><th>代號</th><th>名稱</th><th>收盤</th><th>日期</th></tr>
+  {% for mkt, rows in data.prices.items() %}{% for p in rows[:10] %}
+  <tr><td>{{ mkt }}</td><td>{{ p.code }}</td><td>{{ p.name }}</td><td>{{ p.close }}</td><td>{{ p.trade_date }}</td></tr>
+  {% endfor %}{% endfor %}</table>
+</div>
+
+<div class="card">
+  <h2>休市日</h2>
+  <table>{% for d, n in data.holidays %}<tr><td>{{ d }}</td><td>{{ n }}</td></tr>{% endfor %}</table>
+</div>
+{% endblock %}

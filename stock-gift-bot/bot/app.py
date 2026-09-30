@@ -8,6 +8,7 @@ from datetime import datetime, time
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, HTTPException, Request
 
+from .admin import build_router
 from .config import Config
 from .db import DB
 from .line_api import LineClient, text
@@ -23,6 +24,7 @@ line = LineClient(cfg.access_token, cfg.channel_secret)
 service = Service(cfg, db, line)
 scheduler = BackgroundScheduler(timezone=cfg.tz)
 app = FastAPI(title="stock-gift-bot")
+app.include_router(build_router(service, scheduler))
 
 # If the NAS was down at 09:10, still send when it comes back, up to this time.
 LATE_SEND_UNTIL = time(13, 30)
@@ -64,8 +66,7 @@ def shutdown():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "refresh_date": db.get_meta("refresh_date"),
-            "digest_date": db.get_meta("digest_date"), "refresh_errors": db.get_meta("refresh_errors")}
+    return {"ok": True, "refresh_date": db.get_meta("refresh_date")}
 
 
 @app.post("/callback")
@@ -77,18 +78,20 @@ async def callback(request: Request):
     for ev in json.loads(body).get("events", []):
         token = ev.get("replyToken")
         user = ev.get("source", {}).get("userId", "")
-        if not token:
+        if not token or not user:
             continue
         try:
-            if not cfg.user_id:
-                line.reply(token, [text(f"你的 LINE userId：\n{user}\n請填到 .env 的 LINE_USER_ID 後重啟")])
+            if ev["type"] == "unfollow":
                 continue
-            if user != cfg.user_id:
-                continue  # private bot: ignore everyone else
+            gate = service.register(user)
+            if gate is not None:  # pending approval or blocked
+                if gate:
+                    line.reply(token, gate)
+                continue
             if ev["type"] == "postback":
-                line.reply(token, service.on_postback(ev["postback"]["data"]))
+                line.reply(token, service.on_postback(user, ev["postback"]["data"]))
             elif ev["type"] == "message" and ev["message"].get("type") == "text":
-                line.reply(token, service.on_text(ev["message"]["text"]))
+                line.reply(token, service.on_text(user, ev["message"]["text"]))
             elif ev["type"] == "follow":
                 line.reply(token, [text("嗨！我會在每個交易日 9:10 提醒你股東會紀念品 🎁\n輸入「說明」看指令")])
         except Exception:

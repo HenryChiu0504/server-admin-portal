@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <form class="inline" method="get">
+    <input name="q" value="{{ q }}" placeholder="代號 / 名稱 / 紀念品">
+    <select name="scope">
+      <option value="upcoming" {{ 'selected' if scope == 'upcoming' }}>進行中</option>
+      <option value="all" {{ 'selected' if scope == 'all' }}>全部</option>
+    </select>
+    <button>搜尋</button>
+  </form>
+  <span class="muted">共 {{ rows|length }} 筆</span>
+</div>
+
+<div class="card">
+<table>
+<tr><th>代號</th><th>名稱</th><th>昨收</th><th>紀念品</th><th>最後買進日</th><th>股東會</th><th>投票期間</th>
+<th>要買</th><th>不買</th><th>已購入</th><th>已投票</th><th>來源</th><th></th></tr>
+{% for e in rows %}{% set p = prices.get(e.code) %}
+<tr>
+  <td>{{ e.code }}</td><td>{{ e.name }}</td>
+  <td>{{ '%g'|format(p.close) if p and p.close is not none else '-' }}</td>
+  <td class="wrap">{{ e.gift }}</td>
+  <td>{{ e.last_buy }}{% if e.last_buy == today.isoformat() %} <span class="tag want">今天</span>{% endif %}</td>
+  <td>{{ e.meeting }}</td>
+  <td>
+    <form class="inline" method="post" action="/admin/gifts/{{ e.id }}/vote">
+      <input type="date" name="start" value="{{ e.vote_start or '' }}" required>
+      <input type="date" name="end" value="{{ e.vote_end or '' }}" required>
+      <button class="sec" title="儲存後不會被爬蟲覆蓋">存</button>
+    </form>
+    <span class="muted">{{ {'estimate':'推估','source':'來源','manual':'手動'}.get(e.vote_source) }}</span>
+  </td>
+  <td><a href="/admin/records?event={{ e.id }}&buy=want">{{ e.n_want or 0 }}</a></td>
+  <td><a href="/admin/records?event={{ e.id }}&buy=skip">{{ e.n_skip or 0 }}</a></td>
+  <td><a href="/admin/records?event={{ e.id }}&buy=bought">{{ e.n_bought or 0 }}</a></td>
+  <td><a href="/admin/records?event={{ e.id }}&vote=voted">{{ e.n_voted or 0 }}</a></td>
+  <td class="muted">{{ e.source }}</td>
+  <td><form class="inline" method="post" action="/admin/gifts/{{ e.id }}/delete" onsubmit="return confirm('刪除 {{ e.code }}？相關紀錄也會刪除')"><button class="danger">刪</button></form></td>
+</tr>
+{% endfor %}
+</table>
+</div>
+
+<div class="card">
+  <h2>手動新增 / 修正股東會</h2>
+  <form class="inline" method="post" action="/admin/gifts/add" style="flex-wrap:wrap">
+    <input name="code" placeholder="代號" required size="6">
+    <input name="name" placeholder="名稱" size="8">
+    <input name="gift" placeholder="紀念品">
+    <label>最後買進 <input type="date" name="last_buy" required></label>
+    <label>股東會 <input type="date" name="meeting" required></label>
+    <label>投票 <input type="date" name="vote_start"> ~ <input type="date" name="vote_end"></label>
+    <button>儲存</button>
+  </form>
+  <p class="muted">代號 + 股東會日期相同會更新原本那筆。</p>
+</div>
+{% endblock %}

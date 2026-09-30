@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>連線自我檢查</h2>
+  <p class="muted">測試 LINE、HiStock、證交所、櫃買中心、資料庫是否正常（實際連線，約需 10–30 秒）。</p>
+  <form method="post" action="/admin/test/check"><button>開始檢查</button></form>
+  {% if checks %}
+  <table style="margin-top:10px">{% for name, ok, detail in checks %}
+    <tr><td>{{ name }}</td><td class="{{ 'ok' if ok else 'err' }}">{{ '✔ 正常' if ok else '✘ 失敗' }}</td><td class="wrap">{{ detail }}</td></tr>
+  {% endfor %}</table>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>模擬某一天的提醒</h2>
+  <p class="muted">選使用者和日期，看那天 {{ remind_time }} 會收到什麼（只預覽，不改任何狀態）。可以再按「推播到 LINE」實際收一次測試訊息。</p>
+  <form class="inline" method="get" action="/admin/test">
+    <select name="user" required>{% for u in users %}<option value="{{ u.user_id }}" {{ 'selected' if user == u.user_id }}>{{ u.display_name or u.user_id }}（{{ USER_STATUS_ZH[u.status] }}）</option>{% endfor %}</select>
+    <input type="date" name="day" value="{{ day }}" required>
+    <button>預覽</button>
+  </form>
+
+  {% if preview %}
+  <p>{{ preview.day }}：{{ '交易日' if preview.trading else '非交易日（只會有投票提醒）' }}，共 <b>{{ preview.reminders|length }}</b> 則</p>
+  <table><tr><th>類型</th><th>代號</th><th>名稱</th><th>昨收</th><th>紀念品</th><th>最後買進</th><th>投票期間</th><th>備註</th></tr>
+  {% for i in preview.reminders %}{% set e = i.event %}{% set p = preview.prices.get(e.code) %}
+  <tr><td>{{ KIND_ZH[i.kind] }}</td><td>{{ e.code }}</td><td>{{ e.name }}</td>
+  <td>{{ '%g'|format(p.close) if p and p.close is not none else '-' }}</td><td class="wrap">{{ e.gift }}</td>
+  <td>{{ e.last_buy }}</td><td>{{ e.vote_start }} ~ {{ e.vote_end }}</td><td class="wrap">{{ i.notes|join(' ') }}</td></tr>
+  {% endfor %}</table>
+  <form method="post" action="/admin/test/push" style="margin-top:10px">
+    <input type="hidden" name="user" value="{{ user }}"><input type="hidden" name="day" value="{{ day }}">
+    <button>推播到這位使用者的 LINE</button>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}

@@ -16,7 +16,10 @@ def _hhmm(value: str) -> time:
 class Config:
     channel_secret: str = field(default_factory=lambda: _env("LINE_CHANNEL_SECRET"))
     access_token: str = field(default_factory=lambda: _env("LINE_CHANNEL_ACCESS_TOKEN"))
-    user_id: str = field(default_factory=lambda: _env("LINE_USER_ID"))
+    # New LINE users are 'pending' until approved in the admin backend, unless this is true.
+    auto_approve: bool = field(default_factory=lambda: _env("AUTO_APPROVE_USERS", "false").lower() == "true")
+    admin_username: str = field(default_factory=lambda: _env("ADMIN_USERNAME", "admin"))
+    admin_password: str = field(default_factory=lambda: _env("ADMIN_PASSWORD"))
     remind_time: time = field(default_factory=lambda: _hhmm(_env("REMIND_TIME", "09:10")))
     refresh_time: time = field(default_factory=lambda: _hhmm(_env("REFRESH_TIME", "08:40")))
     buy_remind_trading_days: int = field(default_factory=lambda: int(_env("BUY_REMIND_TRADING_DAYS", "3")))

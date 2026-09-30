@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card grid">
+  <div class="stat"><b>{{ stats.users_active }}</b><span>使用中使用者</span></div>
+  <div class="stat"><b>{{ stats.users_pending }}</b><span>待核准</span> {% if stats.users_pending %}<a href="/admin/users">前往</a>{% endif %}</div>
+  <div class="stat"><b>{{ stats.events_upcoming }}</b><span>進行中股東會 / 共 {{ stats.events_total }}</span></div>
+  <div class="stat"><b>{{ stats.prices.n }}</b><span>收盤價（{{ stats.prices.d or '-' }}）</span></div>
+  <div class="stat"><b>{{ stats.bought }}</b><span>已購入紀錄</span></div>
+  <div class="stat"><b>{{ stats.voted }}</b><span>已投票紀錄</span></div>
+  <div class="stat">
+    {% if quota.error %}<b>-</b><span class="err">LINE 額度查詢失敗</span>
+    {% else %}<b>{{ quota.used }}{% if quota.limit %} / {{ quota.limit }}{% endif %}</b><span>本月 LINE 推播則數</span>{% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <h2>資料更新</h2>
+  <p>最後更新：{{ refresh_date or '尚未更新' }}
+  {% if refresh_errors %}<div class="err">{{ refresh_errors }}</div>{% else %}<span class="ok">（無錯誤）</span>{% endif %}</p>
+  <form class="inline" method="post" action="/admin/refresh"><button>立即更新資料</button></form>
+  <form class="inline" method="post" action="/admin/send-daily"><button class="sec">發送今日提醒（未發過的人）</button></form>
+  <form class="inline" method="post" action="/admin/send-daily" onsubmit="return confirm('會再推播一次給所有人，確定？')">
+    <input type="hidden" name="force" value="1"><button class="danger">強制重發給所有人</button></form>
+</div>
+
+<div class="card">
+  <h2>排程</h2>
+  <table><tr><th>工作</th><th>下次執行</th></tr>
+  {% for j in jobs %}<tr><td>{{ {'refresh':'更新資料','daily':'每日提醒'}.get(j.id, j.id) }}</td><td>{{ j.next }}</td></tr>{% endfor %}
+  </table>
+</div>
+
+<div class="card">
+  <h2>最近爬取紀錄</h2>
+  <table><tr><th>時間</th><th>來源</th><th>筆數</th><th>錯誤</th></tr>
+  {% for r in runs %}<tr><td>{{ r.at }}</td><td>{{ r.source }}</td><td>{{ r.count }}</td><td class="err wrap">{{ r.error }}</td></tr>{% endfor %}
+  </table>
+</div>
+{% endblock %}

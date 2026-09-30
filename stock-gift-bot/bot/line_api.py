@@ -40,6 +40,23 @@ class LineClient:
     def reply(self, token: str, messages: list[dict]):
         self._post("reply", {"replyToken": token, "messages": messages[:5]})
 
+    def _get(self, url: str) -> dict:
+        r = requests.get(url, timeout=15, headers={"Authorization": f"Bearer {self.token}"})
+        r.raise_for_status()
+        return r.json()
+
+    def profile(self, user_id: str) -> dict:
+        return self._get(f"https://api.line.me/v2/bot/profile/{user_id}")
+
+    def bot_info(self) -> dict:
+        return self._get("https://api.line.me/v2/bot/info")
+
+    def quota(self) -> dict:
+        """{'limit': monthly push limit or None, 'used': pushes used this month}"""
+        q = self._get(f"{API}/quota")
+        used = self._get(f"{API}/quota/consumption").get("totalUsage")
+        return {"limit": q.get("value") if q.get("type") == "limited" else None, "used": used}
+
 
 def text(msg: str) -> dict:
     return {"type": "text", "text": msg[:5000]}

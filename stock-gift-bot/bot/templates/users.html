@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+<p class="muted">新使用者加 bot 好友或傳訊息後會出現在這裡，核准後才會收到提醒（.env 設 AUTO_APPROVE_USERS=true 可自動核准）。
+「管理員」會收到資料抓取失敗的通知。</p>
+<table>
+<tr><th>名稱</th><th>LINE userId</th><th>狀態</th><th>管理員</th><th>已購入</th><th>已投票</th><th>加入時間</th><th>今日已推播</th><th>操作</th></tr>
+{% for u in rows %}
+<tr>
+  <td><form class="inline" method="post" action="/admin/users/{{ u.user_id }}/rename">
+    <input name="display_name" value="{{ u.display_name }}" size="10"><button class="sec">改</button></form></td>
+  <td class="muted">{{ u.user_id }}</td>
+  <td><span class="tag {{ u.status }}">{{ USER_STATUS_ZH[u.status] }}</span></td>
+  <td>{{ '✔' if u.is_admin }}</td>
+  <td><a href="/admin/records?user={{ u.user_id }}&buy=bought">{{ u.n_bought or 0 }}</a></td>
+  <td><a href="/admin/records?user={{ u.user_id }}&vote=voted">{{ u.n_voted or 0 }}</a></td>
+  <td>{{ u.created_at }}</td>
+  <td>{{ '✔' if u.digest_date == today.isoformat() }}</td>
+  <td>
+    {% if u.status != 'active' %}<form class="inline" method="post" action="/admin/users/{{ u.user_id }}/approve"><button>核准</button></form>{% endif %}
+    {% if u.status != 'blocked' %}<form class="inline" method="post" action="/admin/users/{{ u.user_id }}/block"><button class="sec">停用</button></form>{% endif %}
+    <form class="inline" method="post" action="/admin/users/{{ u.user_id }}/{{ 'unadmin' if u.is_admin else 'admin' }}"><button class="sec">{{ '取消管理員' if u.is_admin else '設為管理員' }}</button></form>
+    <a href="/admin/logs?user={{ u.user_id }}">紀錄</a>
+    <form class="inline" method="post" action="/admin/users/{{ u.user_id }}/delete" onsubmit="return confirm('刪除使用者和他的所有紀錄？')"><button class="danger">刪</button></form>
+  </td>
+</tr>
+{% else %}<tr><td colspan="9" class="muted">還沒有使用者。用手機加 bot 好友並傳一句話。</td></tr>
+{% endfor %}
+</table>
+</div>
+{% endblock %}

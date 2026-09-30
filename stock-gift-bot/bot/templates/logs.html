@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <form class="inline" method="get">
+    <select name="user"><option value="">所有人</option>
+      {% for u in users %}<option value="{{ u.user_id }}" {{ 'selected' if user == u.user_id }}>{{ u.display_name or u.user_id }}</option>{% endfor %}</select>
+    <button>篩選</button>
+  </form>
+  <span class="muted">最近 500 筆</span>
+</div>
+<div class="card">
+<table><tr><th>時間</th><th>使用者</th><th>股票</th><th>動作</th><th>來源</th></tr>
+{% for r in rows %}
+<tr><td>{{ r.at }}</td><td>{{ r.display_name or r.user_id or '-' }}</td><td>{{ r.code or '' }} {{ r.name or '' }}</td>
+<td>{{ r.action }}</td><td class="muted">{{ {'line':'LINE','admin':'後台','system':'系統'}.get(r.via, r.via) }}</td></tr>
+{% endfor %}
+</table>
+</div>
+{% endblock %}

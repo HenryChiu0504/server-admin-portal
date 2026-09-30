@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>股東紀念品 Bot 後台</title>
+<style>
+:root { --bg:#f6f7f9; --card:#fff; --fg:#1d2330; --muted:#6b7280; --line:#e5e7eb; --pri:#1e88e5; --ok:#2e7d32; --warn:#c62828; }
+@media (prefers-color-scheme: dark) { :root { --bg:#12151b; --card:#1b2029; --fg:#e6e9ef; --muted:#9aa3b2; --line:#2c3340; } }
+* { box-sizing:border-box; }
+body { margin:0; font:14px/1.5 system-ui,-apple-system,"Noto Sans TC",sans-serif; background:var(--bg); color:var(--fg); }
+nav { display:flex; flex-wrap:wrap; gap:4px; padding:10px 16px; background:var(--card); border-bottom:1px solid var(--line); }
+nav a { padding:6px 12px; border-radius:6px; color:var(--fg); text-decoration:none; }
+nav a.on, nav a:hover { background:var(--pri); color:#fff; }
+main { padding:16px; max-width:1400px; margin:auto; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:14px; overflow-x:auto; }
+.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); gap:12px; }
+.stat b { display:block; font-size:24px; }
+.stat span { color:var(--muted); }
+table { border-collapse:collapse; width:100%; }
+th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; vertical-align:top; }
+td.wrap { white-space:normal; min-width:160px; }
+th { color:var(--muted); font-weight:600; }
+input, select, button { font:inherit; padding:5px 8px; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--fg); }
+button { background:var(--pri); color:#fff; border:0; cursor:pointer; }
+button.sec { background:var(--line); color:var(--fg); }
+button.danger { background:var(--warn); }
+form.inline { display:inline-flex; gap:4px; align-items:center; margin:0; }
+.msg { background:#e3f2fd; color:#0d47a1; padding:10px 14px; border-radius:8px; margin-bottom:14px; white-space:pre-wrap; }
+.err { color:var(--warn); white-space:pre-wrap; }
+.ok { color:var(--ok); }
+.muted { color:var(--muted); }
+.tag { display:inline-block; padding:1px 8px; border-radius:10px; background:var(--line); font-size:12px; }
+.tag.bought, .tag.voted, .tag.active { background:#c8e6c9; color:#1b5e20; }
+.tag.want, .tag.pending { background:#fff3e0; color:#e65100; }
+.tag.skip, .tag.expired, .tag.blocked { background:#eceff1; color:#546e7a; }
+h2 { margin:0 0 10px; font-size:17px; }
+</style>
+</head>
+<body>
+<nav>
+  {% set p = request.url.path %}
+  <a href="/admin" class="{{ 'on' if p == '/admin' }}">總覽</a>
+  <a href="/admin/gifts" class="{{ 'on' if p.startswith('/admin/gifts') }}">紀念品資料</a>
+  <a href="/admin/scrape" class="{{ 'on' if p == '/admin/scrape' }}">即時爬取</a>
+  <a href="/admin/users" class="{{ 'on' if p == '/admin/users' }}">使用者</a>
+  <a href="/admin/records" class="{{ 'on' if p == '/admin/records' }}">購買/投票紀錄</a>
+  <a href="/admin/logs" class="{{ 'on' if p == '/admin/logs' }}">操作紀錄</a>
+  <a href="/admin/test" class="{{ 'on' if p.startswith('/admin/test') }}">測試</a>
+</nav>
+<main>
+{% if msg %}<div class="msg">{{ msg }}</div>{% endif %}
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

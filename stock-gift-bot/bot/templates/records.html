@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <form class="inline" method="get" style="flex-wrap:wrap">
+    <select name="user"><option value="">所有人</option>
+      {% for u in users %}<option value="{{ u.user_id }}" {{ 'selected' if f.user == u.user_id }}>{{ u.display_name or u.user_id }}</option>{% endfor %}</select>
+    <select name="buy"><option value="">購買狀態</option>
+      {% for k, v in STATUS_ZH.items() %}<option value="{{ k }}" {{ 'selected' if f.buy == k }}>{{ v }}</option>{% endfor %}</select>
+    <select name="vote"><option value="">投票狀態</option>
+      {% for k, v in VOTE_ZH.items() %}<option value="{{ k }}" {{ 'selected' if f.vote == k }}>{{ v }}</option>{% endfor %}</select>
+    {% if f.event %}<input type="hidden" name="event" value="{{ f.event }}"><span class="tag">限定單一股東會</span>{% endif %}
+    <button>篩選</button> <a href="/admin/records">清除</a>
+  </form>
+  <span class="muted">共 {{ rows|length }} 筆（沒回覆過的不列出）</span>
+</div>
+
+<div class="card">
+<table>
+<tr><th>使用者</th><th>代號</th><th>名稱</th><th>紀念品</th><th>最後買進</th><th>投票期間</th><th>購買</th><th>投票</th><th>更新時間</th><th>修改</th></tr>
+{% for r in rows %}
+<tr>
+  <td>{{ r.display_name or r.user_id }}</td><td>{{ r.code }}</td><td>{{ r.name }}</td><td class="wrap">{{ r.gift }}</td>
+  <td>{{ r.last_buy }}</td><td>{{ r.vote_start or '' }} ~ {{ r.vote_end or '' }}</td>
+  <td><span class="tag {{ r.buy_status }}">{{ STATUS_ZH[r.buy_status] }}</span></td>
+  <td>{% if r.buy_status == 'bought' %}<span class="tag {{ r.vote_status }}">{{ VOTE_ZH[r.vote_status] }}</span>{% endif %}</td>
+  <td class="muted">{{ r.updated_at }}</td>
+  <td><form class="inline" method="post" action="/admin/records">
+    <input type="hidden" name="user_id" value="{{ r.user_id }}"><input type="hidden" name="event_id" value="{{ r.event_id }}">
+    <select name="buy_status">{% for k, v in STATUS_ZH.items() %}<option value="{{ k }}" {{ 'selected' if r.buy_status == k }}>{{ v }}</option>{% endfor %}</select>
+    <select name="vote_status">{% for k, v in VOTE_ZH.items() %}<option value="{{ k }}" {{ 'selected' if r.vote_status == k }}>{{ v }}</option>{% endfor %}</select>
+    <button class="sec">存</button></form></td>
+</tr>
+{% endfor %}
+</table>
+</div>
+
+<div class="card">
+  <h2>幫使用者登記</h2>
+  <form class="inline" method="post" action="/admin/records/add">
+    <select name="user_id" required>{% for u in users %}<option value="{{ u.user_id }}">{{ u.display_name or u.user_id }}</option>{% endfor %}</select>
+    <input name="code" placeholder="股票代號" required size="8">
+    <select name="buy_status">{% for k, v in STATUS_ZH.items() %}<option value="{{ k }}" {{ 'selected' if k == 'bought' }}>{{ v }}</option>{% endfor %}</select>
+    <button>登記</button>
+  </form>
+</div>
+{% endblock %}

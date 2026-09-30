@@ -45,7 +45,8 @@ def plan_day(events: list[dict], today: date, cal: TradingCalendar, cfg: Config,
 
         # ---- expiry ------------------------------------------------------
         if buy in ("pending", "want") and today > last_buy:
-            updates.append((e["id"], "expired", None))
+            if buy == "want":  # never-answered events simply stop; no row needed
+                updates.append((e["id"], "expired", None))
             continue
         if buy == "bought" and vote == "pending" and vote_end and today > vote_end:
             updates.append((e["id"], None, "expired"))
