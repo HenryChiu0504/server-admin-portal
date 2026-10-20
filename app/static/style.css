@@ -373,6 +373,9 @@ dialog::backdrop{background:var(--backdrop);backdrop-filter:blur(4px)}
 .gpu-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 .gpu-stats small{display:block;color:var(--muted);font-size:11px;margin-bottom:2px}
 .gpu-stats strong{font-size:16px;font-variant-numeric:tabular-nums}
+.gpu-card.gpu-faulted{border-color:var(--bad-border);background:linear-gradient(0deg,var(--bad-bg),var(--bad-bg)) padding-box}
+.gpu-fault-note{display:flex;flex-direction:column;gap:6px;color:var(--danger);font-size:13px}
+.gpu-fault-note span{color:var(--muted);font-size:12px}
 .proc-list{display:grid;gap:2px;border-top:1px solid var(--border);padding-top:8px}
 .proc-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:12px;align-items:center;padding:8px 6px;border-radius:10px}
 .proc-row:hover{background:var(--hover)}

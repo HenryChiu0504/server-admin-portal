@@ -161,19 +161,51 @@ def tailscale_state() -> dict[str, Any]:
     }
 
 
-def gpu_metrics() -> list[dict[str, Any]]:
-    if run(["bash", "-lc", "command -v nvidia-smi >/dev/null 2>&1"]).returncode != 0:
-        return []
-    query = "index,name,temperature.gpu,fan.speed,memory.used,memory.total,utilization.gpu"
-    result = run(["nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader,nounits"], timeout=8)
-    if result.returncode != 0:
-        return []
+# ---------------------------------------------------------------------------
+# GPU metrics. One GPU that has failed (e.g. Xid 79 "fallen off the bus") makes
+# every all-GPU nvidia-smi query fail, which used to hide all GPUs and break the
+# fan curve. We fall back to querying each GPU by PCI bus id, keep the healthy
+# ones in gpu_metrics() (same shape as before) and report the broken ones in
+# gpu_faults() so the UI can show them as down.
+# ---------------------------------------------------------------------------
+NVIDIA_PROC_GPUS = Path("/proc/driver/nvidia/gpus")
+GPU_QUERY = "index,name,temperature.gpu,fan.speed,memory.used,memory.total,utilization.gpu,pci.bus_id"
+XID_REASONS = {
+    13: "GPU 執行例外（多半是程式錯誤）",
+    31: "GPU 記憶體分頁錯誤（多半是程式錯誤）",
+    43: "GPU 停止處理（程式被中止）",
+    45: "程式被中止（非硬體故障）",
+    48: "雙位元 ECC 記憶體錯誤",
+    61: "GPU 內部微控制器錯誤",
+    62: "GPU 內部微控制器停止",
+    63: "ECC 記憶體分頁退役",
+    64: "ECC 記憶體分頁退役失敗",
+    74: "NVLink 錯誤",
+    79: "GPU 從 PCIe 匯流排掉線（fallen off the bus）",
+    92: "單位元 ECC 錯誤率過高",
+    94: "ECC 記憶體錯誤（已隔離）",
+    95: "ECC 記憶體錯誤（無法隔離）",
+    119: "GSP 回應逾時",
+    120: "GSP 錯誤",
+}
+_gpu_snapshot: dict[str, Any] = {"t": 0.0, "rows": [], "faults": []}
+_gpu_snapshot_lock = threading.Lock()
+_xid_cache: dict[str, Any] = {"t": 0.0, "events": {}}
+
+
+def _norm_bus(bus: str) -> str:
+    """'00000000:52:00.0' / '0000:52:00.0' / '0000:52:00' -> '52:00'."""
+    parts = bus.strip().lower().split(":")
+    return ":".join(parts[-2:]).split(".")[0] if len(parts) >= 2 else bus.strip().lower()
+
+
+def _parse_gpu_rows(text: str) -> list[dict[str, Any]]:
     rows = []
-    for line in result.stdout.strip().splitlines():
+    for line in text.strip().splitlines():
         parts = [x.strip() for x in line.split(",")]
-        if len(parts) != 7:
+        if len(parts) != 8:
             continue
-        idx, name, temp, fan, mem_used, mem_total, util = parts
+        idx, name, temp, fan, mem_used, mem_total, util, bus = parts
         try:
             used = float(mem_used)
             total = float(mem_total)
@@ -186,10 +218,90 @@ def gpu_metrics() -> list[dict[str, Any]]:
                 "vram_total": total,
                 "vram_percent": round((used / total * 100) if total else 0, 1),
                 "utilization": float(util),
+                "bus_id": bus,
             })
         except ValueError:
             continue
     return rows
+
+
+def gpu_bus_ids() -> list[str]:
+    """PCI bus ids of every GPU the NVIDIA driver knows about, in nvidia-smi index order."""
+    try:
+        return sorted(p.name for p in NVIDIA_PROC_GPUS.iterdir())
+    except OSError:
+        return []
+
+
+def gpu_proc_model(bus: str) -> str:
+    try:
+        for line in (NVIDIA_PROC_GPUS / bus / "information").read_text(errors="replace").splitlines():
+            if line.startswith("Model:"):
+                return line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return "NVIDIA GPU"
+
+
+def gpu_xid_events() -> dict[str, int]:
+    """Latest NVIDIA Xid code per GPU (normalized bus id) from the kernel log, cached 60 s."""
+    now = time.time()
+    if now - _xid_cache["t"] < 60:
+        return _xid_cache["events"]
+    result = run(["dmesg"], timeout=5)
+    if result.returncode != 0 or "Xid" not in result.stdout:
+        result = run(["journalctl", "-k", "-b", "--no-pager", "-o", "cat"], timeout=10)
+    events: dict[str, int] = {}
+    for m in re.finditer(r"NVRM: Xid \(PCI:([0-9A-Fa-f:.]+)\): (\d+)", result.stdout or ""):
+        events[_norm_bus(m.group(1))] = int(m.group(2))
+    _xid_cache.update(t=now, events=events)
+    return events
+
+
+def gpu_snapshot() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(healthy GPU rows, faulted GPUs). Shared by callers for 2 s to avoid repeated nvidia-smi runs."""
+    with _gpu_snapshot_lock:
+        if time.time() - _gpu_snapshot["t"] < 2:
+            return _gpu_snapshot["rows"], _gpu_snapshot["faults"]
+        rows: list[dict[str, Any]] = []
+        faults: list[dict[str, Any]] = []
+        if run(["bash", "-lc", "command -v nvidia-smi >/dev/null 2>&1"]).returncode == 0:
+            buses = gpu_bus_ids()
+            result = run(["nvidia-smi", f"--query-gpu={GPU_QUERY}", "--format=csv,noheader,nounits"], timeout=8)
+            rows = _parse_gpu_rows(result.stdout) if result.returncode == 0 else []
+            if not rows or (buses and len(rows) < len(buses)):
+                # Some GPU is unreachable: query each one on its own.
+                rows = []
+                xids = None
+                for position, bus in enumerate(buses):
+                    one = run(["nvidia-smi", "-i", bus, f"--query-gpu={GPU_QUERY}", "--format=csv,noheader,nounits"], timeout=5)
+                    got = _parse_gpu_rows(one.stdout) if one.returncode == 0 else []
+                    if got:
+                        rows.extend(got)
+                        continue
+                    if xids is None:
+                        xids = gpu_xid_events()
+                    xid = xids.get(_norm_bus(bus))
+                    faults.append({
+                        "index": position,
+                        "name": gpu_proc_model(bus),
+                        "bus_id": bus,
+                        "xid": xid,
+                        "reason": XID_REASONS.get(xid, "驅動程式無法存取這張 GPU") if xid else "驅動程式無法存取這張 GPU",
+                        "detail": (one.stdout or "").strip().splitlines()[0][:200] if (one.stdout or "").strip() else "",
+                    })
+        _gpu_snapshot.update(t=time.time(), rows=rows, faults=faults)
+        return rows, faults
+
+
+def gpu_metrics() -> list[dict[str, Any]]:
+    """Healthy GPUs only (same fields as before plus bus_id)."""
+    return gpu_snapshot()[0]
+
+
+def gpu_faults() -> list[dict[str, Any]]:
+    """GPUs the driver lists but nvidia-smi cannot read (e.g. Xid 79)."""
+    return gpu_snapshot()[1]
 
 
 def list_normal_users() -> list[dict[str, Any]]:
@@ -251,6 +363,7 @@ def metrics(request: Request):
         "memory_used_gb": round((vm.total - vm.available) / (1024**3), 1),
         "memory_total_gb": round(vm.total / (1024**3), 1),
         "gpus": gpu_metrics(),
+        "gpu_faults": gpu_faults(),
     }
 
 
@@ -926,18 +1039,24 @@ def container_of(pid: int) -> str | None:
 def gpu_processes() -> list[dict[str, Any]]:
     if run(["bash", "-lc", "command -v nvidia-smi >/dev/null 2>&1"]).returncode != 0:
         return []
-    ids = run(["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"], timeout=8)
+    healthy, faults = gpu_snapshot()
+    # With a faulted GPU present the all-GPU queries fail, so ask each healthy GPU separately.
+    targets = [[]] if not faults else [["-i", g["bus_id"]] for g in healthy]
     index_of = {}
-    for line in ids.stdout.splitlines():
-        parts = [x.strip() for x in line.split(",")]
-        if len(parts) == 2 and parts[0].isdigit():
-            index_of[parts[1]] = int(parts[0])
-    apps = run(
-        ["nvidia-smi", "--query-compute-apps=gpu_uuid,pid,used_memory,process_name", "--format=csv,noheader,nounits"],
-        timeout=8,
-    )
+    app_lines: list[str] = []
+    for sel in targets:
+        ids = run(["nvidia-smi", *sel, "--query-gpu=index,uuid", "--format=csv,noheader"], timeout=8)
+        for line in ids.stdout.splitlines():
+            parts = [x.strip() for x in line.split(",")]
+            if len(parts) == 2 and parts[0].isdigit():
+                index_of[parts[1]] = int(parts[0])
+        apps = run(
+            ["nvidia-smi", *sel, "--query-compute-apps=gpu_uuid,pid,used_memory,process_name", "--format=csv,noheader,nounits"],
+            timeout=8,
+        )
+        app_lines.extend(apps.stdout.splitlines())
     rows = []
-    for line in apps.stdout.splitlines():
+    for line in app_lines:
         parts = [x.strip() for x in line.split(",", 3)]
         if len(parts) != 4 or not parts[1].isdigit():
             continue
@@ -969,7 +1088,7 @@ def gpu_processes() -> list[dict[str, Any]]:
 async def api_gpu_processes(request: Request):
     require_auth(request)
     gpus, procs = await asyncio.gather(in_thread(gpu_metrics), in_thread(gpu_processes))
-    return {"gpus": gpus, "processes": procs, "now": time.time()}
+    return {"gpus": gpus, "faults": gpu_faults(), "processes": procs, "now": time.time()}
 
 
 @app.post("/api/gpu/processes/{pid}/kill")

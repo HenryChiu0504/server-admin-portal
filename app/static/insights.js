@@ -30,8 +30,9 @@ async function refreshGpuProcs() {
   d.processes.forEach(p => (byGpu[p.gpu] = byGpu[p.gpu] || []).push(p));
   const busy = d.gpus.filter(g => byGpu[g.index]?.length).length;
   const badge = qs('#gpu-summary');
-  badge.textContent = d.gpus.length ? `${busy} / ${d.gpus.length} 張使用中` : '未偵測到 GPU';
-  badge.className = 'badge ' + (busy ? 'ok' : '');
+  const faults = d.faults || [];
+  badge.textContent = (d.gpus.length ? `${busy} / ${d.gpus.length} 張使用中` : '未偵測到 GPU') + (faults.length ? ` · ${faults.length} 張故障` : '');
+  badge.className = 'badge ' + (faults.length ? 'bad' : busy ? 'ok' : '');
 
   // Per-user totals across all GPUs.
   const users = {};
@@ -43,7 +44,15 @@ async function refreshGpuProcs() {
   qs('#gpu-users').innerHTML = Object.entries(users).sort((a, b) => b[1].mb - a[1].mb).map(([name, u]) =>
     `<span class="user-chip"><strong>${esc(name)}</strong><span>${u.gpus.size} 張 GPU · ${u.n} 個程式 · ${fmtMB(u.mb)}</span></span>`).join('');
 
-  qs('#gpu-cards').innerHTML = d.gpus.map(g => {
+  const faultCard = f => `<article class="card gpu-card gpu-faulted">
+      <div class="card-head"><div><h3>GPU ${f.index}</h3><p class="muted small">${esc(f.name)}</p></div>
+        <span class="badge bad">故障停機中</span></div>
+      <div class="gpu-fault-note"><strong>${f.xid ? `Xid ${f.xid}：` : ''}${esc(f.reason)}</strong>
+        <span>PCI ${esc(f.bus_id)} · 驅動程式已無法存取，這張卡不會被分配工作，其他 GPU 不受影響。需要停機檢查電源／插槽或送修。</span></div>
+    </article>`;
+  const cards = [...d.gpus.map(g => ({k: g.index, g})), ...faults.map(f => ({k: f.index, f}))].sort((a, b) => a.k - b.k);
+  qs('#gpu-cards').innerHTML = cards.map(({g, f}) => {
+    if (f) return faultCard(f);
     const procs = byGpu[g.index] || [];
     const rows = procs.map(p => {
       const again = signalled.has(p.pid);
